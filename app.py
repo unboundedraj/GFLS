@@ -495,3 +495,46 @@ def transform_cols_to_long_format(df):
     result_df = pd.DataFrame(long_format_data)
     
     return result_df
+
+def pivot_with_assumptions(df, year):
+    """
+    Load CSV, filter by year, pivot metric values, and add a combined assumptions column per country.
+
+    Returns:
+    - pivot_df: DataFrame indexed by country, with metric columns and one 'assumptions' column.
+    """
+    
+    # Handle None/NaN values in year column before converting to int
+    df = df.copy()  # Don't modify original dataframe
+    
+    # Replace None/NaN with a default value or drop rows
+    df['year'] = pd.to_numeric(df['year'], errors='coerce')  # Convert to NaN if can't convert
+    
+    # Option 1: Drop rows with invalid years
+    df = df.dropna(subset=['year'])
+    
+    # Option 2: Or fill with a default year (uncomment if you prefer this)
+    # df['year'] = df['year'].fillna(2023)  # Replace with appropriate default
+    
+    df['year'] = df['year'].astype(int)
+
+    # Rest of your function remains the same...
+    df_year = df[df['year'] == year]
+
+    df_values = df_year.groupby(['country', 'metric'], as_index=False)['value'].mean()
+    pivot_df = df_values.pivot(index='country', columns='metric', values='value')
+
+    sources_per_country = (
+        df_year.groupby('country')['source']
+        .apply(lambda x: ', '.join(sorted(set(x.dropna().astype(str)))) if not x.dropna().empty else 'No source')
+    )
+    
+    assumptions_per_country = (
+        df_year.groupby('country')['assumption']
+        .apply(lambda x: ', '.join(sorted(set(x.dropna().astype(str)))) if not x.dropna().empty else 'No assumption')
+    )
+
+    pivot_df['source'] = sources_per_country
+    pivot_df['assumption'] = assumptions_per_country
+
+    return pivot_df
