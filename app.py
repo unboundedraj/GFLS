@@ -327,3 +327,171 @@ def transform_metrics_columns_to_long_format(df):
     print(f"Years found: {sorted(result_df['year'].unique())}")
     
     return result_df
+
+#Function that has parameters in cols with labels having the year
+def df_format4(file_name, sheet_name='Sheet1', header=0, usecols=None, is_excel=True):
+    from pandas import read_excel, read_csv
+    
+    try:
+        # Read the data
+        if is_excel:
+            df = read_excel(file_name, sheet_name=sheet_name, header=header, usecols=usecols)
+        else:
+            df = read_csv(file_name, header=header, usecols=usecols)
+        
+        # Transform to long format
+        transformed_df = transform_cols_to_long_format(df)
+        
+        return transformed_df
+        
+    except Exception as e:
+        print(f"Error reading or transforming file: {e}")
+        raise
+
+def transform_cols_to_long_format(df):
+    import pandas as pd
+    import re
+    
+    # Debug: Print column names and first few rows
+    print("Column names:", df.columns.tolist())
+    print("First 3 rows:")
+    print(df.head(3))
+    
+    # Extract years from column names
+    years = []
+    for col in df.columns:
+        year_matches = re.findall(r'(19\d{2}|20\d{2})', str(col))
+        years.extend([int(year) for year in year_matches])
+    
+    unique_years = sorted(list(set(years)))
+    print(f"Found years: {unique_years}")
+    
+    # Create an empty list to store all rows
+    long_format_data = []
+    
+    # IMPROVED COUNTRY COLUMN DETECTION
+    country_col = None
+    
+    # Method 1: Look for column with 'country' in name
+    for col in df.columns:
+        if 'country' in str(col).lower():
+            country_col = col
+            break
+    
+    # Method 2: If no 'country' column, look for columns with country-like values
+    if country_col is None:
+        for col in df.columns:
+            # Check if this column contains country-like strings
+            sample_values = df[col].dropna().astype(str).head(10)
+            if any(len(str(val)) > 2 and str(val).isalpha() for val in sample_values):
+                country_col = col
+                break
+    
+    # Method 3: Let user specify or use a specific column index
+    if country_col is None:
+        print("Available columns:")
+        for i, col in enumerate(df.columns):
+            print(f"{i}: {col} - Sample values: {df[col].dropna().head(3).tolist()}")
+        
+        # You can manually specify the column here
+        country_col = df.columns[0]  # Change this index if needed
+        print(f"Using column: {country_col}")
+    
+    print(f"Selected country column: {country_col}")
+    print(f"Sample country values: {df[country_col].dropna().head(5).tolist()}")
+    
+    # Define columns to skip (non-metric columns)
+    skip_columns = [country_col]
+    
+    # Add other non-metric columns that should be skipped
+    for col in df.columns:
+        if any(keyword in str(col).lower() for keyword in ['country', 'mapped', 'income', 'level', 'index']):
+            skip_columns.append(col)
+    
+    # Remove duplicates from skip_columns
+    skip_columns = list(set(skip_columns))
+    
+    # Iterate through each row in the dataframe
+    for _, row in df.iterrows():
+        country = row[country_col]
+        
+        # Skip if country is NaN or empty
+        if pd.isna(country) or str(country).strip() == '':
+            continue
+        
+        # Process each metric column
+        for col in df.columns:
+            if col in skip_columns:
+                continue
+                
+            value = row[col]
+            
+            # Skip if value is empty, NaN, or whitespace
+            if pd.isna(value) or str(value).strip() == '':
+                continue
+            
+            # Clean the value
+            if isinstance(value, str):
+                value = value.strip().replace(',', '')
+            
+            # Try to convert to numeric and check if it's zero
+            try:
+                numeric_value = float(value)
+                # SKIP ZERO VALUES
+                if numeric_value == 0:
+                    continue
+            except (ValueError, TypeError):
+                # If can't convert to numeric, keep as string but skip if it's "0"
+                if str(value).strip() == "0":
+                    continue
+            
+            # Clean the metric name by removing years
+            clean_metric = col
+            for year in unique_years:
+                clean_metric = clean_metric.replace(f'({year})', '').replace(f'-{year}', '').replace(f' {year}', '')
+            clean_metric = clean_metric.strip()
+            
+            # Extract years from THIS specific column
+            column_years = [int(year) for year in re.findall(r'(19\d{2}|20\d{2})', str(col))]
+            
+            if column_years:
+                # Column has specific year(s) - create row only for those years
+                for year in column_years:
+                    long_row = {
+                        'country': country,
+                        'year': year,
+                        'metric': clean_metric,
+                        'value': value,
+                        'source': 'Original Dataset',
+                        'assumption': None
+                    }
+                    long_format_data.append(long_row)
+            else:
+                # Column has no specific year - create rows for all years found in dataset
+                if unique_years:
+                    for year in unique_years:
+                        long_row = {
+                            'country': country,
+                            'year': year,
+                            'metric': clean_metric,
+                            'value': value,
+                            'source': 'Original Dataset',
+                            'assumption': None
+                        }
+                        long_format_data.append(long_row)
+                else:
+                    # No years found anywhere, create row with None
+                    long_row = {
+                        'country': country,
+                        'year': None,
+                        'metric': clean_metric,
+                        'value': value,
+                        'source': 'Original Dataset',
+                        'assumption': None
+                    }
+                    long_format_data.append(long_row)
+    
+    # Create the final dataframe
+    result_df = pd.DataFrame(long_format_data)
+    
+    return result_df
