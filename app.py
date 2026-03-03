@@ -109,6 +109,87 @@ def interpolate_col(pdf, df, peak_year=2023, columns='None', method='linear'):
 
     return df_interp
 
+def cagr(start, end, periods):
+    """Compound Annual Growth Rate"""
+    return (end / start) ** (1 / periods) - 1 if start > 0 and periods > 0 else 0
+
+def extrapolate_col(pdf, df, peak_year=2023, columns='None', method='linear', order=2, ma_window=3):
+    """
+    Extrapolate missing values in pdf for peak_year, using historical data from df
+    Methods: 'cagr', 'linear_regression', 'polynomial_regression', 'moving_average_growth', 'arima'
+    """
+    import warnings
+    warnings.filterwarnings("ignore")
+    
+    df_extrap = pdf.copy()
+
+    if columns == 'None':
+        cols_to_extrap = df_extrap.select_dtypes(include=[np.number]).columns.tolist()
+    else:
+        cols_to_extrap = columns
+
+    for country in df_extrap.index:
+        for col in cols_to_extrap:
+            mask = (df['country'] == country) & (df['metric'] == col)
+            hist = df[mask].sort_values('year')
+            years = hist['year'].values
+            values = hist['value'].values
+
+            # Only extrapolate if missing
+            if pd.isnull(df_extrap.loc[country, col]) and len(years) >= 2:
+                target_year = peak_year
+
+                if method == 'cagr':
+                    # Use only first and last actual values
+                    start, end = values[0], values[-1]
+                    periods = years[-1] - years[0]
+                    if start > 0 and periods > 0:
+                        growth_rate = cagr(start, end, periods)
+                        n_extrap = target_year - years[-1]
+                        if n_extrap > 0:
+                            y_pred = end * ((1 + growth_rate) ** n_extrap)
+                            df_extrap.loc[country, col] = y_pred
+
+                elif method == 'linear_regression':
+                    # y = beta0 + beta1 * year
+                    beta = np.polyfit(years, values, 1)
+                    y_pred = np.polyval(beta, target_year)
+                    df_extrap.loc[country, col] = y_pred
+
+                elif method == 'polynomial_regression':
+                    deg = order if len(years) > order else 2
+                    beta = np.polyfit(years, values, deg)
+                    y_pred = np.polyval(beta, target_year)
+                    df_extrap.loc[country, col] = y_pred
+
+                elif method == 'moving_average_growth':
+                    # Compute yearly growth rates, moving average, then extrapolate
+                    if len(values) >= ma_window + 1:
+                        growth_rates = values[1:] / values[:-1] - 1
+                        avg_growth = pd.Series(growth_rates).rolling(ma_window).mean().iloc[-1]
+                        if np.isnan(avg_growth):
+                            avg_growth = np.mean(growth_rates)
+                        n_extrap = target_year - years[-1]
+                        y_pred = values[-1] * ((1 + avg_growth) ** n_extrap)
+                        df_extrap.loc[country, col] = y_pred
+
+                elif method == 'arima':
+                    try:
+                        from statsmodels.tsa.arima.model import ARIMA
+                        if len(values) > 3:  # ARIMA needs more data
+                            years_full = np.arange(years[0], target_year + 1)
+                            n_extrap = target_year - years[-1]
+                            model = ARIMA(values, order=(1,1,0))
+                            model_fit = model.fit()
+                            forecast = model_fit.forecast(steps=n_extrap)
+                            y_pred = forecast.values[-1]
+                            df_extrap.loc[country, col] = y_pred
+                    except ImportError:
+                        # No statsmodels installed
+                        pass
+                # You can add more methods!
+    return df_extrap
+
 #Function that has straight up same values:
 def df_format1(file_name, sheet_name='Sheet1', column_mapping=None, header=0, usecols=None, is_excel=True):
     from pandas import read_excel, read_csv
