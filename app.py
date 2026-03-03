@@ -14,6 +14,101 @@ import warnings
 warnings.filterwarnings('ignore')
 from io import BytesIO
 
+def interpolate_col(pdf, df, peak_year=2023, columns='None', method='linear'):
+    """
+    Interpolate missing values in the pivot DataFrame `pdf` using the specified method.
+
+    Parameters:
+    - pdf: pivot DataFrame with countries as index and metrics as columns (including 'source' and 'assumptions')
+    - df: original DataFrame (not used directly here but kept for compatibility)
+    - peak_year: year used for filtering or reference (not used here but kept for compatibility)
+    - columns: list of columns to interpolate or 'None' to interpolate all numeric columns
+    - method: interpolation method as string
+
+    Returns:
+    - DataFrame with interpolated values
+    """
+    # Copy to avoid modifying original
+    df_interp = pdf.copy()
+
+    # Select columns to interpolate
+    if columns == 'None':
+        # Select numeric columns only (exclude 'source' and 'assumptions')
+        cols_to_interp = df_interp.select_dtypes(include=[np.number]).columns.tolist()
+    else:
+        cols_to_interp = columns
+
+    # Define supported methods mapping to pandas interpolate methods or custom
+    pandas_methods = ['linear', 'polynomial', 'spline', 'nearest', 'pad', 'ffill', 'bfill']
+    # Map your method names to pandas or custom
+    method_map = {
+        'linear': 'linear',
+        'polynomial': 'polynomial',
+        'spline': 'spline',
+        'nearest_neighbour': 'nearest',
+        'piecewise_constant': 'pad',  # forward fill as piecewise constant approx
+        'logarithmic': 'logarithmic'  # custom implementation below
+    }
+
+    if method not in method_map:
+        raise ValueError(f"Interpolation method '{method}' not supported.")
+
+    interp_method = method_map[method]
+
+    # For polynomial and spline, define order
+    order = 2
+
+    # Interpolate each column separately
+    for col in cols_to_interp:
+        series = df_interp[col]
+
+        if series.isnull().all():
+            # Skip columns with all NaNs
+            continue
+
+        if interp_method == 'logarithmic':
+            # Custom logarithmic interpolation:
+            # Interpolate on log scale, then exponentiate back
+            # Handle zeros or negative values by shifting data if needed
+            s = series.copy()
+            # Shift to positive if needed
+            min_val = s.min()
+            shift = 0
+            if min_val <= 0:
+                shift = abs(min_val) + 1
+                s = s + shift
+
+            # Log transform
+            s_log = np.log(s)
+
+            # Interpolate on log scale using linear method
+            s_log_interp = s_log.interpolate(method='linear', limit_direction='both')
+
+            # Exponentiate back and shift
+            s_interp = np.exp(s_log_interp) - shift
+
+            df_interp[col] = s_interp
+
+        elif interp_method in ['polynomial', 'spline']:
+            # Use pandas interpolate with order
+            try:
+                df_interp[col] = series.interpolate(method=interp_method, order=order, limit_direction='both')
+            except Exception as e:
+                # fallback to linear if polynomial/spline fails
+                df_interp[col] = series.interpolate(method='linear', limit_direction='both')
+
+        else:
+            # Use pandas interpolate for other methods
+            # Note: pandas interpolate does not support 'nearest_neighbour' but supports 'nearest'
+            # 'piecewise_constant' approximated by 'pad' (forward fill)
+            try:
+                df_interp[col] = series.interpolate(method=interp_method, limit_direction='both')
+            except Exception as e:
+                # fallback to linear if error
+                df_interp[col] = series.interpolate(method='linear', limit_direction='both')
+
+    return df_interp
+
 #Function that has straight up same values:
 def df_format1(file_name, sheet_name='Sheet1', column_mapping=None, header=0, usecols=None, is_excel=True):
     from pandas import read_excel, read_csv
