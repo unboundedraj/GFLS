@@ -1140,3 +1140,194 @@ def identify_sparse_value_candidates(df, sample_size=1000):
                     })
     
     return candidates
+
+def identify_insufficient_data_countries(df, min_data_threshold=0.8):
+    """
+    Identify countries with insufficient data based on a minimum data coverage threshold
+    
+    Parameters:
+    df: DataFrame with countries as index or 'Country' column
+    min_data_threshold: Minimum proportion of non-null values required (default 0.8)
+    
+    Returns:
+    List of countries with insufficient data coverage
+    """
+    # Make a copy to avoid modifying original
+    data = df.copy()
+    
+    # Handle country column/index
+    if 'country' in data.columns:
+        data = data.set_index('country')
+    
+    # Calculate data coverage for each country (row)
+    total_columns = len(data.columns)
+    data_coverage = data.notna().sum(axis=1) / total_columns
+    
+    # Identify countries below threshold
+    insufficient_countries = data_coverage[data_coverage < min_data_threshold].index.tolist()
+    
+    return insufficient_countries
+
+def classify_countries(df, min_data_threshold=0.8, insufficient_label='Insufficient Data'):
+    """
+    Classify countries, labeling those with insufficient data using a specified label
+    
+    Parameters:
+    df: DataFrame with countries as index or 'Country' column
+    min_data_threshold: Minimum proportion of non-null values required (default 0.8)
+    insufficient_label: Label to assign to countries with insufficient data
+    
+    Returns:
+    DataFrame with added 'Classification' column
+    """
+    # Make a copy to avoid modifying original
+    result_df = df.copy()
+    
+    # Ensure Country is a column for easier handling
+    country_col_added = False
+    if 'country' not in result_df.columns:
+        result_df = result_df.reset_index()
+        if 'index' in result_df.columns:
+            result_df = result_df.rename(columns={'index': 'country'})
+        country_col_added = True
+    
+    # Get countries with insufficient data
+    insufficient_countries = identify_insufficient_data_countries(df, min_data_threshold)
+    
+    # Create classification column
+    result_df['Classification'] = 'Sufficient Data'
+    
+    # Mark countries with insufficient data
+    insufficient_mask = result_df['country'].isin(insufficient_countries)
+    result_df.loc[insufficient_mask, 'Classification'] = insufficient_label
+    
+    # Calculate and add data coverage information
+    data_cols = [col for col in result_df.columns if col not in ['country', 'Classification']]
+    if data_cols:
+        result_df['Data_Coverage'] = result_df[data_cols].notna().sum(axis=1) / len(data_cols)
+    else:
+        result_df['Data_Coverage'] = 0.0
+    
+    # Add summary statistics
+    total_countries = len(result_df)
+    insufficient_count = len(insufficient_countries)
+    sufficient_count = total_countries - insufficient_count
+    
+    # Store summary as attributes (for optional access)
+    result_df.attrs['summary'] = {
+        'total_countries': total_countries,
+        'sufficient_data_countries': sufficient_count,
+        'insufficient_data_countries': insufficient_count,
+        'insufficient_percentage': (insufficient_count / total_countries) * 100,
+        'threshold_used': min_data_threshold,
+        'insufficient_label': insufficient_label
+    }
+    
+    return result_df
+
+def get_classification_summary(df):
+    """
+    Get detailed summary of country classifications
+    
+    Parameters:
+    df: DataFrame with Classification column
+    
+    Returns:
+    Dictionary with classification summary statistics
+    """
+    if 'Classification' not in df.columns:
+        raise ValueError("DataFrame must contain 'Classification' column")
+    
+    # Basic classification counts
+    classification_counts = df['Classification'].value_counts()
+    total_countries = len(df)
+    
+    summary = {
+        'total_countries': total_countries,
+        'classification_counts': classification_counts.to_dict(),
+        'classification_percentages': (classification_counts / total_countries * 100).to_dict()
+    }
+    
+    # Add data coverage statistics if available
+    if 'Data_Coverage' in df.columns:
+        summary['data_coverage_stats'] = {
+            'mean_coverage': df['Data_Coverage'].mean(),
+            'median_coverage': df['Data_Coverage'].median(),
+            'min_coverage': df['Data_Coverage'].min(),
+            'max_coverage': df['Data_Coverage'].max(),
+            'std_coverage': df['Data_Coverage'].std()
+        }
+    
+    # Add fallback information if available
+    if 'Fallback_Applied' in df.columns:
+        fallback_count = df['Fallback_Applied'].sum()
+        summary['fallback_stats'] = {
+            'total_fallbacks_applied': fallback_count,
+            'fallback_percentage': (fallback_count / total_countries) * 100
+        }
+    
+    return summary
+
+
+def analyze_data_coverage_patterns(df, min_data_threshold=0.8):
+    """
+    Analyze data coverage patterns across countries
+    
+    Parameters:
+    df: DataFrame with countries as index or 'Country' column
+    min_data_threshold: Threshold for sufficient data
+    
+    Returns:
+    Dictionary with detailed coverage analysis
+    """
+    # Make a copy and handle country column/index
+    data = df.copy()
+    if 'country' in data.columns:
+        countries = data['country'].values
+        data = data.set_index('country')
+    else:
+        countries = data.index.values
+    
+    # Calculate coverage for each country
+    total_columns = len(data.columns)
+    coverage_by_country = data.notna().sum(axis=1) / total_columns
+    
+    # Calculate coverage for each feature
+    coverage_by_feature = data.notna().sum(axis=0) / len(data)
+    
+    # Identify patterns
+    sufficient_countries = coverage_by_country[coverage_by_country >= min_data_threshold]
+    insufficient_countries = coverage_by_country[coverage_by_country < min_data_threshold]
+    
+    # Feature completeness analysis
+    complete_features = coverage_by_feature[coverage_by_feature == 1.0]
+    incomplete_features = coverage_by_feature[coverage_by_feature < 1.0]
+    sparse_features = coverage_by_feature[coverage_by_feature < 0.5]
+    
+    analysis = {
+        'coverage_summary': {
+            'mean_country_coverage': coverage_by_country.mean(),
+            'median_country_coverage': coverage_by_country.median(),
+            'min_country_coverage': coverage_by_country.min(),
+            'max_country_coverage': coverage_by_country.max(),
+            'std_country_coverage': coverage_by_country.std()
+        },
+        'country_classification': {
+            'sufficient_data_countries': len(sufficient_countries),
+            'insufficient_data_countries': len(insufficient_countries),
+            'threshold_used': min_data_threshold
+        },
+        'feature_analysis': {
+            'total_features': len(coverage_by_feature),
+            'complete_features': len(complete_features),
+            'incomplete_features': len(incomplete_features),
+            'sparse_features': len(sparse_features),
+            'mean_feature_coverage': coverage_by_feature.mean()
+        },
+        'detailed_coverage': {
+            'by_country': coverage_by_country.to_dict(),
+            'by_feature': coverage_by_feature.to_dict()
+        }
+    }
+    
+    return analysis
