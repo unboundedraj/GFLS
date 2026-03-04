@@ -988,3 +988,155 @@ def get_row_sparsity_summary(df, sparse_value=None, top_n=10):
         return summary_df.head(top_n)
     
     return summary_df
+
+def analyze_sparsity_patterns(df, sparse_value=None):
+    """
+    Comprehensive sparsity analysis
+    
+    Returns:
+    dict: Comprehensive sparsity analysis results
+    """
+    total_elements = df.shape[0] * df.shape[1]
+    
+    if sparse_value is None:
+        total_sparse = df.isnull().sum().sum()
+    else:
+        total_sparse = df.isnull().sum().sum() + (df == sparse_value).sum().sum()
+    
+    overall_sparsity = total_sparse / total_elements if total_elements > 0 else 0
+    
+    # Column analysis
+    col_sparsity = [sparsity_ratio_column(df, col, sparse_value) for col in df.columns]
+    
+    # Row analysis
+    row_sparsity = [sparsity_ratio_row(df, idx, sparse_value) for idx in df.index]
+    
+    results = {
+        'overall_sparsity': overall_sparsity,
+        'total_elements': total_elements,
+        'total_sparse': total_sparse,
+        'column_stats': {
+            'mean_sparsity': np.mean(col_sparsity),
+            'median_sparsity': np.median(col_sparsity),
+            'min_sparsity': np.min(col_sparsity),
+            'max_sparsity': np.max(col_sparsity),
+            'std_sparsity': np.std(col_sparsity)
+        },
+        'row_stats': {
+            'mean_sparsity': np.mean(row_sparsity),
+            'median_sparsity': np.median(row_sparsity),
+            'min_sparsity': np.min(row_sparsity),
+            'max_sparsity': np.max(row_sparsity),
+            'std_sparsity': np.std(row_sparsity)
+        },
+        'recommendations': {
+            'columns_to_drop_50pct': [col for col in df.columns if sparsity_ratio_column(df, col, sparse_value) > 0.5],
+            'columns_to_drop_70pct': [col for col in df.columns if sparsity_ratio_column(df, col, sparse_value) > 0.7],
+            'rows_to_drop_50pct': len([idx for idx in df.index if sparsity_ratio_row(df, idx, sparse_value) > 0.5]),
+            'rows_to_drop_70pct': len([idx for idx in df.index if sparsity_ratio_row(df, idx, sparse_value) > 0.7])
+        }
+    }
+    
+    return results
+
+def optimize_dataframe_sparsity(df, column_threshold=0.5, row_threshold=0.5, sparse_value=None):
+    """
+    Optimize dataframe by removing sparse columns and rows
+    
+    Returns:
+    dict: Optimized dataframe and optimization report
+    """
+    original_shape = df.shape
+    
+    # Step 1: Remove sparse columns
+    df_step1 = drop_sparse_columns(df, column_threshold, sparse_value)
+    
+    # Step 2: Remove sparse rows
+    df_optimized = drop_sparse_rows(df_step1, row_threshold, sparse_value)
+    
+    final_shape = df_optimized.shape
+    
+    report = {
+        'original_shape': original_shape,
+        'final_shape': final_shape,
+        'columns_removed': original_shape[1] - final_shape[1],
+        'rows_removed': original_shape[0] - final_shape[0],
+        'data_retention': (final_shape[0] * final_shape[1]) / (original_shape[0] * original_shape[1]) if original_shape[0] * original_shape[1] > 0 else 0,
+        'column_threshold': column_threshold,
+        'row_threshold': row_threshold,
+        'sparse_value': sparse_value
+    }
+    
+    return {
+        'optimized_df': df_optimized,
+        'report': report
+    }
+
+def compare_sparsity_thresholds(df, thresholds=[0.3, 0.5, 0.7, 0.9], sparse_value=None):
+    """
+    Compare different sparsity thresholds and their impact
+    
+    Returns:
+    DataFrame: Comparison results for different thresholds
+    """
+    comparison_data = []
+    original_shape = df.shape
+    
+    for threshold in thresholds:
+        # Test column dropping
+        df_col_dropped = drop_sparse_columns(df, threshold, sparse_value)
+        
+        # Test row dropping
+        df_row_dropped = drop_sparse_rows(df, threshold, sparse_value)
+        
+        # Test both
+        df_both = drop_sparse_rows(
+            drop_sparse_columns(df, threshold, sparse_value),
+            threshold, sparse_value
+        )
+        
+        comparison_data.append({
+            'threshold': threshold,
+            'columns_remaining': df_col_dropped.shape[1],
+            'rows_remaining_col_drop': df_col_dropped.shape[0],
+            'rows_remaining_row_drop': df_row_dropped.shape[0],
+            'columns_remaining_row_drop': df_row_dropped.shape[1],
+            'final_shape_both': df_both.shape,
+            'data_retention_both': (df_both.shape[0] * df_both.shape[1]) / (original_shape[0] * original_shape[1]) if original_shape[0] * original_shape[1] > 0 else 0
+        })
+    
+    return pd.DataFrame(comparison_data)
+
+def identify_sparse_value_candidates(df, sample_size=1000):
+    """
+    Identify potential sparse values in the dataset
+    
+    Returns:
+    dict: Potential sparse values and their frequencies
+    """
+    candidates = {}
+    
+    # Sample the dataframe if it's large
+    if len(df) > sample_size:
+        sampled_df = df.sample(n=sample_size, random_state=42)
+    else:
+        sampled_df = df
+    
+    for col in sampled_df.select_dtypes(include=[np.number]).columns:
+        value_counts = sampled_df[col].value_counts()
+        total_non_null = sampled_df[col].count()
+        
+        if total_non_null > 0:
+            # Look for values that appear frequently and might be sparse indicators
+            for value, count in value_counts.head(5).items():
+                frequency = count / total_non_null
+                if frequency > 0.1:  # If value appears in more than 10% of non-null values
+                    if value not in candidates:
+                        candidates[value] = []
+                    candidates[value].append({
+                        'column': col,
+                        'frequency': frequency,
+                        'count': count
+                    })
+    
+    return candidates
