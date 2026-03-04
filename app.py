@@ -789,3 +789,202 @@ def pivot_with_assumptions(df, year):
     pivot_df['assumption'] = assumptions_per_country
 
     return pivot_df
+
+def sparsity_ratio_column(df, col, sparse_value=None):
+    """
+    Calculate sparsity ratio of a column
+    
+    Parameters:
+    df: DataFrame
+    col: Column name
+    sparse_value: Value to consider as sparse (None for NaN, 0 for zero, etc.)
+    
+    Returns:
+    float: Sparsity ratio (0-1, where 1 means completely sparse)
+    """
+    if col not in df.columns:
+        raise ValueError(f"Column '{col}' not found in DataFrame")
+    
+    total_count = len(df)
+    
+    if total_count == 0:
+        return 0.0
+    
+    if sparse_value is None:
+        # Count NaN/null values
+        sparse_count = df[col].isnull().sum()
+    else:
+        # Count specific sparse value (including NaN)
+        sparse_count = df[col].isnull().sum() + (df[col] == sparse_value).sum()
+    
+    sparsity_ratio = sparse_count / total_count
+    return sparsity_ratio
+
+def sparsity_ratio_row(df, row_index, sparse_value=None):
+    """
+    Calculate sparsity ratio of a row
+    
+    Parameters:
+    df: DataFrame
+    row_index: Row index
+    sparse_value: Value to consider as sparse (None for NaN, 0 for zero, etc.)
+    
+    Returns:
+    float: Sparsity ratio (0-1, where 1 means completely sparse)
+    """
+    if row_index not in df.index:
+        raise ValueError(f"Row index '{row_index}' not found in DataFrame")
+    
+    row_data = df.loc[row_index]
+    total_count = len(row_data)
+    
+    if total_count == 0:
+        return 0.0
+    
+    if sparse_value is None:
+        # Count NaN/null values
+        sparse_count = row_data.isnull().sum()
+    else:
+        # Count specific sparse value (including NaN)
+        sparse_count = row_data.isnull().sum() + (row_data == sparse_value).sum()
+    
+    sparsity_ratio = sparse_count / total_count
+    return sparsity_ratio
+
+def drop_sparse_columns(df, threshold=0.5, sparse_value=None):
+    """
+    Drop columns with insufficient data (high sparsity)
+    
+    Parameters:
+    df: DataFrame
+    threshold: Sparsity threshold (0-1, columns above this will be dropped)
+    sparse_value: Value to consider as sparse (None for NaN, 0 for zero, etc.)
+    
+    Returns:
+    DataFrame: DataFrame with sparse columns removed
+    """
+    if not 0 <= threshold <= 1:
+        raise ValueError("Threshold must be between 0 and 1")
+    
+    df_copy = df.copy()
+    columns_to_drop = []
+    
+    for col in df_copy.columns:
+        sparsity = sparsity_ratio_column(df_copy, col, sparse_value)
+        if sparsity > threshold:
+            columns_to_drop.append(col)
+    
+    df_result = df_copy.drop(columns=columns_to_drop)
+    
+    return df_result
+
+def drop_sparse_rows(df, threshold=0.5, sparse_value=None):
+    """
+    Drop rows with insufficient data (high sparsity)
+    
+    Parameters:
+    df: DataFrame
+    threshold: Sparsity threshold (0-1, rows above this will be dropped)
+    sparse_value: Value to consider as sparse (None for NaN, 0 for zero, etc.)
+    
+    Returns:
+    DataFrame: DataFrame with sparse rows removed
+    """
+    if not 0 <= threshold <= 1:
+        raise ValueError("Threshold must be between 0 and 1")
+    
+    df_copy = df.copy()
+    rows_to_drop = []
+    
+    for idx in df_copy.index:
+        sparsity = sparsity_ratio_row(df_copy, idx, sparse_value)
+        if sparsity > threshold:
+            rows_to_drop.append(idx)
+    
+    df_result = df_copy.drop(index=rows_to_drop)
+    
+    return df_result
+
+# Convenience functions for comprehensive sparsity analysis
+
+def get_column_sparsity_summary(df, sparse_value=None):
+    """
+    Get sparsity summary for all columns
+    
+    Returns:
+    DataFrame: Summary with columns, sparsity ratios, and recommendations
+    """
+    summary_data = []
+    
+    for col in df.columns:
+        sparsity = sparsity_ratio_column(df, col, sparse_value)
+        total_values = len(df)
+        sparse_count = int(sparsity * total_values)
+        non_sparse_count = total_values - sparse_count
+        
+        # Recommendation based on sparsity
+        if sparsity < 0.1:
+            recommendation = "Excellent - Keep column"
+        elif sparsity < 0.3:
+            recommendation = "Good - Keep column"
+        elif sparsity < 0.5:
+            recommendation = "Fair - Consider imputation"
+        elif sparsity < 0.7:
+            recommendation = "Poor - Consider dropping"
+        else:
+            recommendation = "Very Poor - Drop column"
+        
+        summary_data.append({
+            'column': col,
+            'sparsity_ratio': sparsity,
+            'sparse_count': sparse_count,
+            'non_sparse_count': non_sparse_count,
+            'total_count': total_values,
+            'recommendation': recommendation
+        })
+    
+    summary_df = pd.DataFrame(summary_data)
+    return summary_df.sort_values('sparsity_ratio', ascending=False)
+
+def get_row_sparsity_summary(df, sparse_value=None, top_n=10):
+    """
+    Get sparsity summary for rows
+    
+    Returns:
+    DataFrame: Summary with row indices, sparsity ratios, and counts
+    """
+    summary_data = []
+    
+    for idx in df.index:
+        sparsity = sparsity_ratio_row(df, idx, sparse_value)
+        total_values = len(df.columns)
+        sparse_count = int(sparsity * total_values)
+        non_sparse_count = total_values - sparse_count
+        
+        if sparsity < 0.1:
+            recommendation = "Excellent - Keep column"
+        elif sparsity < 0.3:
+            recommendation = "Good - Keep column"
+        elif sparsity < 0.5:
+            recommendation = "Fair - Consider imputation"
+        elif sparsity < 0.7:
+            recommendation = "Poor - Consider dropping"
+        else:
+            recommendation = "Very Poor - Drop column"
+
+        summary_data.append({
+            'row_index': idx,
+            'sparsity_ratio': sparsity,
+            'sparse_count': sparse_count,
+            'non_sparse_count': non_sparse_count,
+            'total_count': total_values,
+            'recommendation': recommendation
+        })
+    
+    summary_df = pd.DataFrame(summary_data)
+    summary_df = summary_df.sort_values('sparsity_ratio', ascending=False)
+    
+    if top_n:
+        return summary_df.head(top_n)
+    
+    return summary_df
