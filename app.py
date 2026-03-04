@@ -190,6 +190,81 @@ def extrapolate_col(pdf, df, peak_year=2023, columns='None', method='linear', or
                 # You can add more methods!
     return df_extrap
 
+def regression_analysis(years, values, target_year, method='linear', poly_order=2, C=1.0, alpha=1.0, hidden_layer_sizes=(10,)):
+    # Converts years and values to proper numpy arrays
+    X = np.array(years).reshape(-1, 1)
+    y = np.array(values)
+    X_pred = np.array([[target_year]])
+
+    def perform_linear_regression():
+        model = LinearRegression()
+        model.fit(X, y)
+        return model.predict(X_pred)[0]
+
+    def perform_polynomial_regression():
+        from sklearn.preprocessing import PolynomialFeatures
+        from sklearn.linear_model import LinearRegression
+        pf = PolynomialFeatures(degree=poly_order)
+        X_poly = pf.fit_transform(X)
+        X_pred_poly = pf.transform(X_pred)
+        model = LinearRegression()
+        model.fit(X_poly, y)
+        return model.predict(X_pred_poly)[0]
+
+    def perform_ridge_regression():
+        model = Ridge(alpha=alpha)
+        model.fit(X, y)
+        return model.predict(X_pred)[0]
+
+    def perform_lasso_regression():
+        model = Lasso(alpha=alpha)
+        model.fit(X, y)
+        return model.predict(X_pred)[0]
+
+    def perform_logistic_regression():
+        # For binary response; convert y to labels if necessary
+        model = LogisticRegression(C=C)
+        y_bin = (y > np.median(y)).astype(int)  # Example binarization
+        model.fit(X, y_bin)
+        return model.predict(X_pred)[0]
+
+    def perform_decision_tree_regression():
+        model = DecisionTreeRegressor()
+        model.fit(X, y)
+        return model.predict(X_pred)[0]
+
+    def perform_random_forest_regression():
+        model = RandomForestRegressor()
+        model.fit(X, y)
+        return model.predict(X_pred)[0]
+
+    def perform_svm_regression():
+        model = SVR(C=C)
+        model.fit(X, y)
+        return model.predict(X_pred)[0]
+
+    def perform_neural_network_regression():
+        model = MLPRegressor(hidden_layer_sizes=hidden_layer_sizes, max_iter=1000)
+        model.fit(X, y)
+        return model.predict(X_pred)[0]
+
+    method_dispatch = {
+        'linear': perform_linear_regression,
+        'polynomial': perform_polynomial_regression,
+        'ridge': perform_ridge_regression,
+        'lasso': perform_lasso_regression,
+        'logistic': perform_logistic_regression,
+        'decision_tree': perform_decision_tree_regression,
+        'random_forest': perform_random_forest_regression,
+        'svm': perform_svm_regression,
+        'neural_network': perform_neural_network_regression,
+    }
+
+    if method not in method_dispatch:
+        raise ValueError(f"Unknown regression method: {method}")
+
+    return method_dispatch[method]()
+
 #Function that has straight up same values:
 def df_format1(file_name, sheet_name='Sheet1', column_mapping=None, header=0, usecols=None, is_excel=True):
     from pandas import read_excel, read_csv
