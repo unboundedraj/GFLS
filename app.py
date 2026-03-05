@@ -1141,6 +1141,235 @@ def identify_sparse_value_candidates(df, sample_size=1000):
     
     return candidates
 
+def cluster_no(df, features, k_min=1, k_max=10, random_state=42, display_data = False):
+    import numpy as np
+    from sklearn.cluster import KMeans
+    import matplotlib.pyplot as plt
+    
+    X = df[features].copy()
+    k_rng = range(k_min, k_max + 1)
+    sse = []
+    
+    for k in k_rng:
+        km = KMeans(n_clusters=k, random_state=random_state)
+        km.fit(X)
+        sse.append(km.inertia_)
+    
+    # Method 1: Maximum distance to line (your original approach, corrected)
+    def distance_to_line(point, line_start, line_end):
+        """Calculate perpendicular distance from point to line segment"""
+        # Vector from line_start to line_end
+        line_vec = line_end - line_start
+        # Vector from line_start to point
+        point_vec = point - line_start
+        
+        # Project point onto line
+        line_len_sq = np.dot(line_vec, line_vec)
+        if line_len_sq == 0:
+            return np.linalg.norm(point_vec)
+        
+        # Calculate projection parameter
+        t = np.dot(point_vec, line_vec) / line_len_sq
+        
+        # Find closest point on line segment
+        if t < 0:
+            closest_point = line_start
+        elif t > 1:
+            closest_point = line_end
+        else:
+            closest_point = line_start + t * line_vec
+        
+        # Return distance to closest point
+        return np.linalg.norm(point - closest_point)
+    
+    # Create points for distance calculation
+    k_values = np.array(list(k_rng))
+    sse_values = np.array(sse)
+    
+    # Normalize the data for better distance calculation
+    k_norm = (k_values - k_values.min()) / (k_values.max() - k_values.min())
+    sse_norm = (sse_values - sse_values.min()) / (sse_values.max() - sse_values.min())
+    
+    points = np.column_stack((k_norm, sse_norm))
+    line_start = points[0]
+    line_end = points[-1]
+    
+    # Calculate distances
+    distances = np.array([distance_to_line(p, line_start, line_end) for p in points])
+    
+    # Find elbow point (maximum distance)
+    elbow_idx = distances.argmax()
+    optimal_k_method1 = k_values[elbow_idx]
+    
+    # Method 2: Second derivative approach (alternative method)
+    def second_derivative_method(sse_values):
+        """Find elbow using second derivative"""
+        if len(sse_values) < 3:
+            return 1
+        
+        # Calculate first derivative (rate of change)
+        first_deriv = np.diff(sse_values)
+        
+        # Calculate second derivative (rate of change of rate of change)
+        second_deriv = np.diff(first_deriv)
+        
+        # Find point where second derivative is maximum (most curvature)
+        # Add 2 because we lost 2 points in double differentiation
+        elbow_idx = np.argmax(second_deriv) + 2
+        return k_values[elbow_idx]
+    
+    optimal_k_method2 = second_derivative_method(sse_values)
+    
+    # Method 3: Percentage change approach
+    def percentage_change_method(sse_values, threshold=0.1):
+        """Find elbow where percentage improvement drops below threshold"""
+        pct_improvements = []
+        for i in range(1, len(sse_values)):
+            pct_improvement = (sse_values[i-1] - sse_values[i]) / sse_values[i-1]
+            pct_improvements.append(pct_improvement)
+        
+        # Find first point where improvement drops below threshold
+        for i, improvement in enumerate(pct_improvements):
+            if improvement < threshold:
+                return k_values[i + 1] # +1 because we started from index 1
+        
+        # If no point found, return the middle value
+        return k_values[len(k_values)//2]
+    
+    optimal_k_method3 = percentage_change_method(sse_values)
+    if display_data:
+        # Plotting for visualization
+        plt.figure(figsize=(12, 4))
+        
+        # Plot 1: SSE vs K with elbow points
+        plt.subplot(1, 3, 1)
+        plt.plot(k_values, sse_values, 'bo-', markersize=8)
+        plt.axvline(x=optimal_k_method1, color='r', linestyle='--', label=f'Max Distance: {optimal_k_method1}')
+        plt.axvline(x=optimal_k_method2, color='g', linestyle='--', label=f'2nd Derivative: {optimal_k_method2}')
+        plt.axvline(x=optimal_k_method3, color='purple', linestyle='--', label=f'Pct Change: {optimal_k_method3}')
+        plt.xlabel('Number of Clusters (k)')
+        plt.ylabel('SSE (Inertia)')
+        plt.title('Elbow Method - SSE vs K')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 2: Distance to line
+        plt.subplot(1, 3, 2)
+        plt.plot(k_values, distances, 'ro-', markersize=8)
+        plt.axvline(x=optimal_k_method1, color='r', linestyle='--')
+        plt.xlabel('Number of Clusters (k)')
+        plt.ylabel('Distance to Line')
+        plt.title('Distance to Line Method')
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 3: Second derivative
+        plt.subplot(1, 3, 3)
+        if len(sse_values) >= 3:
+            second_deriv = np.diff(np.diff(sse_values))
+            plt.plot(k_values[2:], second_deriv, 'go-', markersize=8)
+            plt.axvline(x=optimal_k_method2, color='g', linestyle='--')
+        plt.xlabel('Number of Clusters (k)')
+        plt.ylabel('Second Derivative')
+        plt.title('Second Derivative Method')
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        print(f"Optimal k recommendations:")
+        print(f"Method 1 (Max Distance to Line): {optimal_k_method1}")
+        print(f"Method 2 (Second Derivative): {optimal_k_method2}")
+        print(f"Method 3 (Percentage Change): {optimal_k_method3}")
+        
+    # Return the most commonly suggested value, or method 1 if all different
+    methods = [optimal_k_method1, optimal_k_method2, optimal_k_method3]
+    # Find most common value
+    from collections import Counter
+    counter = Counter(methods)
+    most_common = counter.most_common(1)[0][0]
+
+    import numpy as np
+    from sklearn.cluster import KMeans
+    from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
+    import matplotlib.pyplot as plt
+    k_candidates = methods
+    X = df[features].copy()
+    
+    results = {}
+    
+    for k in k_candidates:
+        km = KMeans(n_clusters=k, random_state=random_state)
+        labels = km.fit_predict(X)
+        
+        # Calculate validation metrics
+        silhouette = silhouette_score(X, labels)
+        calinski_harabasz = calinski_harabasz_score(X, labels)
+        davies_bouldin = davies_bouldin_score(X, labels)
+        
+        results[k] = {
+            'silhouette': silhouette,
+            'calinski_harabasz': calinski_harabasz,
+            'davies_bouldin': davies_bouldin,
+            'inertia': km.inertia_
+        }
+    
+    # Create comparison table
+    if display_data:
+        print("Cluster Validation Results:")
+        print("=" * 80)
+        print(f"{'k':<3} {'Silhouette':<12} {'Calinski-H':<12} {'Davies-B':<12} {'Inertia':<12}")
+        print("-" * 80)
+    
+        for k in k_candidates:
+            r = results[k]
+            print(f"{k:<3} {r['silhouette']:<12.4f} {r['calinski_harabasz']:<12.2f} {r['davies_bouldin']:<12.4f} {r['inertia']:<12.2f}")
+    
+        print("\nInterpretation:")
+        print("- Silhouette Score: Higher is better (range: -1 to 1)")
+        print("- Calinski-Harabasz: Higher is better")
+        print("- Davies-Bouldin: Lower is better")
+        print("- Inertia: Lower is better (but consider elbow)")
+    
+        # Find best k for each metric
+        best_silhouette = max(results.keys(), key=lambda k: results[k]['silhouette'])
+        best_calinski = max(results.keys(), key=lambda k: results[k]['calinski_harabasz'])
+        best_davies = min(results.keys(), key=lambda k: results[k]['davies_bouldin'])
+        
+        print(f"\nBest k by metric:")
+        print(f"- Silhouette Score: k={best_silhouette}")
+        print(f"- Calinski-Harabasz: k={best_calinski}")
+        print(f"- Davies-Bouldin: k={best_davies}")
+    
+    # Scoring system to find overall best
+    scores = {k: 0 for k in k_candidates}
+    # Rank each metric (3 points for best, 2 for second, 1 for third)
+    metrics_rankings = {
+        'silhouette': sorted(k_candidates, key=lambda k: results[k]['silhouette'], reverse=True),
+        'calinski_harabasz': sorted(k_candidates, key=lambda k: results[k]['calinski_harabasz'], reverse=True),
+        'davies_bouldin': sorted(k_candidates, key=lambda k: results[k]['davies_bouldin'])
+    }
+    points = [3, 2, 1]
+    for metric, ranking in metrics_rankings.items():
+        for i, k in enumerate(ranking):
+            scores[k] += points[i]
+    
+    best_overall = max(scores.keys(), key=lambda k: scores[k])
+    if display_data:
+        print(f"\nOverall ranking (based on combined metrics):")
+        for k in sorted(scores.keys(), key=lambda k: scores[k], reverse=True):
+            print(f"k={k}: {scores[k]} points")
+        
+        print(f"\n🎯 RECOMMENDATION: k={best_overall}")
+    
+    return best_overall
+
+def get_kmeans_labels(df, features, n_clusters = 3, random_state = 42):
+    from sklearn.cluster import KMeans
+    X = df[features]
+    kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
+    kmeans.fit(X)
+    return kmeans.labels_
+
 def identify_insufficient_data_countries(df, min_data_threshold=0.8):
     """
     Identify countries with insufficient data based on a minimum data coverage threshold
