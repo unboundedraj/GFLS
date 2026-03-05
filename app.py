@@ -1,5 +1,6 @@
 
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 from scipy import interpolate
@@ -1369,6 +1370,304 @@ def get_kmeans_labels(df, features, n_clusters = 3, random_state = 42):
     kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
     kmeans.fit(X)
     return kmeans.labels_
+
+def advanced_cluster_analysis(df, selected_features, feature_weights, exclude_countries=None, 
+                            n_clusters=3, max_clusters=6, show_elbow=True, generate_rules=True,
+                            show_pca_loadings=True, loading_threshold=0.5, random_state=42):
+    """
+    Advanced clustering analysis with PCA, decision trees, and comprehensive visualization
+    """
+    import pandas as pd
+    import numpy as np
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.cluster import KMeans
+    from sklearn.metrics import silhouette_score
+    from sklearn.tree import DecisionTreeClassifier, _tree
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    
+    results = {}
+    
+    # Prepare data
+    data = df.copy()
+    if 'country' in data.columns:
+        country_col = 'country'
+    else:
+        country_col = None
+    
+    # Exclude countries if specified
+    if exclude_countries and country_col:
+        data = data[~data[country_col].isin(exclude_countries)]
+    
+    # Filter data based on selected features (remove rows with missing or zero values)
+    if country_col:
+        data_selected = data[[country_col] + selected_features].copy()
+    else:
+        data_selected = data[selected_features].copy()
+    
+    # Remove rows with missing or zero values in selected features
+    mask_na = data_selected[selected_features].isna().any(axis=1)
+    mask_zero = (data_selected[selected_features] == 0).any(axis=1)
+    dropped_mask = mask_na | mask_zero
+    
+    data_cleaned = data_selected.loc[~dropped_mask].reset_index(drop=True)
+    
+    if len(data_cleaned) < n_clusters:
+        raise ValueError(f"Not enough valid data points ({len(data_cleaned)}) for {n_clusters} clusters")
+    
+    # PCA Analysis
+    if show_pca_loadings:
+        scaler_pca = StandardScaler()
+        pca_data_scaled = scaler_pca.fit_transform(data_cleaned[selected_features])
+        
+        pca = PCA()
+        pca.fit(pca_data_scaled)
+        
+        loadings = pca.components_.T * np.sqrt(pca.explained_variance_)
+        loadings_df = pd.DataFrame(
+            loadings, 
+            index=selected_features,
+            columns=[f'PC{i+1}' for i in range(loadings.shape[1])]
+        )
+        results['pca_loadings'] = loadings_df.round(4)
+        
+        # Identify important features
+        important_features = set()
+        for i in range(loadings.shape[1]):
+            comp_loadings = loadings_df.iloc[:, i]
+            sig_feats = comp_loadings[comp_loadings.abs() > loading_threshold].index
+            important_features.update(sig_feats)
+        results['important_features'] = list(important_features)
+    
+    # Standardize and weight features
+    scaler_clustering = StandardScaler()
+    standardized_data = scaler_clustering.fit_transform(data_cleaned[selected_features])
+    standardized_df = pd.DataFrame(standardized_data, columns=selected_features)
+    
+    # Apply weights
+    for feature in selected_features:
+        weight = feature_weights.get(feature, 1)
+        standardized_df[feature] = standardized_df[feature] * weight
+    
+    weighted_data = standardized_df.values
+    
+    # Elbow Method
+    if show_elbow:
+        K_max = min(max_clusters + 1, len(data_cleaned))
+        inertia = []
+        K_range = range(1, K_max + 1)
+        
+        for K in K_range:
+            if K <= len(data_cleaned):
+                kmeans = KMeans(n_clusters=K, random_state=random_state, n_init=10)
+                kmeans.fit(weighted_data)
+                inertia.append(kmeans.inertia_)
+        
+        fig_elbow, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(K_range[:len(inertia)], inertia, marker='o', linewidth=2, markersize=8)
+        ax.set_title('Elbow Method for Optimal K', fontsize=14)
+        ax.set_xlabel('Number of Clusters (K)', fontsize=12)
+        ax.set_ylabel('Inertia', fontsize=12)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        results['elbow_fig'] = fig_elbow
+    
+    # Perform clustering
+    kmeans_final = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
+    cluster_labels = kmeans_final.fit_predict(weighted_data)
+    
+    # Calculate silhouette score
+    if len(set(cluster_labels)) > 1:
+        silhouette_avg = silhouette_score(weighted_data, cluster_labels)
+    else:
+        silhouette_avg = 0
+    results['silhouette_score'] = silhouette_avg
+    
+    # Create results dataframe
+    clustered_data = data_cleaned.copy()
+    clustered_data['Cluster'] = cluster_labels + 1  # Start clusters from 1
+    
+    # Sort clusters by highest weighted feature
+    highest_weight_feature = max(feature_weights, key=feature_weights.get)
+    cluster_means = clustered_data.groupby('Cluster')[highest_weight_feature].mean()
+    sorted_clusters = cluster_means.sort_values(ascending=False).index.tolist()
+    
+    # Remap cluster labels based on sorting
+    cluster_mapping = {old: new for new, old in enumerate(sorted_clusters, 1)}
+    clustered_data['Cluster'] = clustered_data['Cluster'].map(cluster_mapping)
+    
+    # Sort final dataframe
+    clustered_data = clustered_data.sort_values(['Cluster', highest_weight_feature], 
+                                              ascending=[True, False])
+    
+    results['clustered_data'] = clustered_data
+    
+    # Decision Tree Rules
+    if generate_rules:
+        try:
+            dt_clf = DecisionTreeClassifier(random_state=random_state, max_depth=5)
+            dt_clf.fit(standardized_df, clustered_data['Cluster'])
+            
+            rules_df = extract_decision_rules(dt_clf, selected_features, feature_weights, scaler_clustering)
+            results['decision_rules'] = rules_df
+        except Exception as e:
+            print(f"Could not generate decision tree rules: {e}")
+    
+    # Visualization
+    fig_cluster = create_cluster_visualization(
+        clustered_data, selected_features, weighted_data, country_col, n_clusters
+    )
+    results['cluster_plot'] = fig_cluster
+    
+    return results
+
+def extract_decision_rules(tree, feature_names, feature_weights, scaler):
+    """Extract decision tree rules with original scale thresholds"""
+    tree_ = tree.tree_
+    feature = tree_.feature
+    threshold = tree_.threshold
+    children_left = tree_.children_left
+    children_right = tree_.children_right
+    value = tree_.value
+
+    means = scaler.mean_
+    stds = np.sqrt(scaler.var_)
+
+    def convert_threshold(feat_idx, thresh):
+        feat_name = feature_names[feat_idx]
+        w = feature_weights.get(feat_name, 1)
+        mean = means[feat_idx]
+        std = stds[feat_idx]
+        return (thresh / w) * std + mean
+
+    paths = []
+    path_conditions = []
+
+    def recurse(node):
+        if children_left[node] == tree.TREE_LEAF and children_right[node] == tree.TREE_LEAF:
+            class_id = np.argmax(value[node][0])
+            rule = " & ".join(path_conditions) if path_conditions else "All data"
+            paths.append({'Rule': rule, 'Predicted_Cluster': int(class_id) + 1})
+        else:
+            feat_idx = feature[node]
+            feat_name = feature_names[feat_idx]
+            thresh = threshold[node]
+            thresh_orig = convert_threshold(feat_idx, thresh)
+
+            # Left child: feature <= threshold
+            path_conditions.append(f"{feat_name} <= {thresh_orig:.3f}")
+            recurse(children_left[node])
+            path_conditions.pop()
+
+            # Right child: feature > threshold
+            path_conditions.append(f"{feat_name} > {thresh_orig:.3f}")
+            recurse(children_right[node])
+            path_conditions.pop()
+
+    recurse(0)
+    return pd.DataFrame(paths)
+
+def create_cluster_visualization(clustered_data, selected_features, weighted_data, country_col, n_clusters):
+    """Create cluster visualization"""
+    
+    if len(selected_features) >= 3:
+        # For 3+ features, show both direct plot (first 2 features) and PCA plot
+        fig, axes = plt.subplots(1, 2, figsize=(20, 8))
+        
+        # Left plot: First two features direct visualization
+        ax1 = axes[0]
+        scatter1 = ax1.scatter(
+            clustered_data[selected_features[0]], 
+            clustered_data[selected_features[1]], 
+            c=clustered_data['Cluster'], 
+            cmap='viridis', 
+            alpha=0.7, 
+            s=100, 
+            edgecolor='black',
+            linewidth=0.5
+        )
+        
+        if country_col and country_col in clustered_data.columns:
+            for i in range(len(clustered_data)):
+                ax1.annotate(
+                    clustered_data[country_col].iloc[i], 
+                    (clustered_data[selected_features[0]].iloc[i], 
+                     clustered_data[selected_features[1]].iloc[i]), 
+                    fontsize=8, alpha=0.8, ha='center'
+                )
+        
+        ax1.set_title(f'{selected_features[0]} vs {selected_features[1]}', fontsize=12)
+        ax1.set_xlabel(selected_features[0], fontsize=10)
+        ax1.set_ylabel(selected_features[1], fontsize=10)
+        ax1.grid(True, alpha=0.3)
+        plt.colorbar(scatter1, ax=ax1, label='Cluster')
+        
+        # Right plot: PCA visualization (THIS WAS MISSING!)
+        from sklearn.decomposition import PCA
+        
+        pca_vis = PCA(n_components=2)
+        reduced_data = pca_vis.fit_transform(weighted_data)
+        
+        ax2 = axes[1]
+        scatter2 = ax2.scatter(
+            reduced_data[:, 0], 
+            reduced_data[:, 1], 
+            c=clustered_data['Cluster'], 
+            cmap='viridis', 
+            alpha=0.7, 
+            s=100, 
+            edgecolor='black',
+            linewidth=0.5
+        )
+        
+        if country_col and country_col in clustered_data.columns:
+            for i in range(len(clustered_data)):
+                ax2.annotate(
+                    clustered_data[country_col].iloc[i], 
+                    (reduced_data[i, 0], reduced_data[i, 1]), 
+                    fontsize=8, alpha=0.8, ha='center'
+                )
+        
+        ax2.set_title('PCA Cluster Visualization (All Features)', fontsize=12)
+        ax2.set_xlabel(f'PC1 ({pca_vis.explained_variance_ratio_[0]:.2%} variance)', fontsize=10)
+        ax2.set_ylabel(f'PC2 ({pca_vis.explained_variance_ratio_[1]:.2%} variance)', fontsize=10)
+        ax2.grid(True, alpha=0.3)
+        plt.colorbar(scatter2, ax=ax2, label='Cluster')
+        
+    else:
+        # For exactly 2 features, show only direct plot
+        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+        
+        scatter = ax.scatter(
+            clustered_data[selected_features[0]], 
+            clustered_data[selected_features[1]], 
+            c=clustered_data['Cluster'], 
+            cmap='viridis', 
+            alpha=0.7, 
+            s=100, 
+            edgecolor='black',
+            linewidth=0.5
+        )
+        
+        if country_col and country_col in clustered_data.columns:
+            for i in range(len(clustered_data)):
+                ax.annotate(
+                    clustered_data[country_col].iloc[i], 
+                    (clustered_data[selected_features[0]].iloc[i], 
+                     clustered_data[selected_features[1]].iloc[i]), 
+                    fontsize=8, alpha=0.8, ha='center'
+                )
+        
+        ax.set_title(f'Cluster Visualization: {selected_features[0]} vs {selected_features[1]}', fontsize=14)
+        ax.set_xlabel(selected_features[0], fontsize=12)
+        ax.set_ylabel(selected_features[1], fontsize=12)
+        ax.grid(True, alpha=0.3)
+        plt.colorbar(scatter, ax=ax, label='Cluster')
+    
+    plt.tight_layout()
+    return fig
+
 
 def identify_insufficient_data_countries(df, min_data_threshold=0.8):
     """
