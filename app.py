@@ -1,6 +1,7 @@
 
 
 import matplotlib.pyplot as plt
+import streamlit as st
 import pandas as pd
 import numpy as np
 from scipy import interpolate
@@ -14,6 +15,923 @@ from sklearn.neural_network import MLPRegressor
 import warnings
 warnings.filterwarnings('ignore')
 from io import BytesIO
+
+def main():
+    st.title("GFLS Automation")
+    st.write("## Data Collation")
+    st.write("Upload an Excel or CSV file and Choose a Formatting Option")
+    
+    # File type toggle
+    file_type = st.radio(
+        "Select File Type:",
+        ("Excel", "CSV"),
+        horizontal=True
+    )
+    
+    # File uploader based on selection
+    if file_type == "CSV":
+        uploaded_file = st.file_uploader(
+            "Choose a CSV File", 
+            type=['csv'],
+            help="Upload your CSV file here"
+        )
+        sheet_name = None  # CSV files don't have sheets
+    else:
+        uploaded_file = st.file_uploader(
+            "Choose an Excel File", 
+            type=['xlsx', 'xls'],
+            help="Upload your Excel file here"
+        )
+        
+        # Sheet name input for Excel files
+        sheet_name = st.text_input(
+            "Enter Sheet Name:", 
+            value="Sheet1",
+            help="Specify which sheet to read from the Excel file"
+        )
+    
+    # Only show formatting options if file is uploaded
+    if uploaded_file is not None:
+        st.success(f"File '{uploaded_file.name}' uploaded successfully!")
+        
+        # Show file info
+        file_details = {
+            "Filename": uploaded_file.name,
+            "File size": f"{uploaded_file.size} bytes",
+        }
+        st.write("**File Details:**")
+        st.json(file_details)
+        
+        # Preview original data
+        try:
+            if file_type == "CSV":
+                preview_df = pd.read_csv(uploaded_file)
+                uploaded_file.seek(0)  # Reset file pointer
+            else:
+                preview_df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
+                uploaded_file.seek(0)  # Reset file pointer
+            
+            st.write("**Original Data Preview:**")
+            st.dataframe(preview_df.head())
+            
+        except Exception as e:
+            st.error(f"Error reading file: {str(e)}")
+            return
+        
+        st.write("---")
+        st.write("**Choose a Formatting Option:**")
+        if 'format_selected' not in st.session_state:
+            st.session_state.format_selected = None
+        # Create columns for buttons
+        col1, col2, col3, col4 = st.columns(4)
+        # Format buttons
+        with col1:
+            #format1_clicked = st.button("Format 1", help="Same form, different labels")
+            # Get column names for Format 1 dropdown options
+            available_columns = preview_df.columns.tolist()
+            if st.button("Format 1", key="format1"):
+                st.session_state.format_selected = 1
+        
+        with col2:
+            #format2_clicked = st.button("Format 2", help="Years in different columns")
+            if st.button("Format 2", key="format2"):
+                st.session_state.format_selected = 2
+        
+        with col3:
+            #format3_clicked = st.button("Format 3", help="Year in rows, metrics in columns")
+            if st.button("Format 3", key="format3"):
+                st.session_state.format_selected = 3
+        
+        with col4:
+            #format4_clicked = st.button("Format 4", help="Metric in columns with labelled years")
+            if st.button("Format 4", key="format4"):
+                st.session_state.format_selected = 4
+        df = None
+        # Handle Format 1 with column mapping input
+        if st.session_state.format_selected == 1:
+            st.write("---")
+            st.write("**Format 1: Column Mapping Configuration**")
+            st.write("Select which columns from your data correspond to each required field:")
+            
+            # Create input fields for column mapping
+            col_left, col_right = st.columns(2)
+            
+            with col_left:
+                country_col = st.selectbox(
+                    "Country column:", 
+                    options=available_columns,
+                    key="country_col",
+                    help="Select the column that contains country/nation data"
+                )
+                metric_col = st.selectbox(
+                    "Metric column:", 
+                    options=available_columns,
+                    key="metric_col",
+                    help="Select the column that contains metric/title data"
+                )
+                source_col = st.selectbox(
+                    "Source column:", 
+                    options=available_columns,
+                    key="source_col",
+                    help="Select the column that contains source data"
+                )
+            
+            with col_right:
+                year_col = st.selectbox(
+                    "Year column:", 
+                    options=available_columns,
+                    key = "year_col",
+                    help="Select the column that contains year/peak year data"
+                )
+                value_col = st.selectbox(
+                    "Value column:", 
+                    options=available_columns,
+                    key="value_col",
+                    help="Select the column that contains value data"
+                )
+                assumption_col = st.selectbox(
+                    "Assumption column:", 
+                    options=available_columns,
+                    key="assumption_col",
+                    help="Select the column that contains assumption data"
+                )
+            
+            # Create column mapping dictionary
+            column_mapping = {
+                st.session_state.country_col: 'country',
+                st.session_state.year_col: 'year',
+                st.session_state.metric_col: 'metric',
+                st.session_state.value_col: 'value',
+                st.session_state.source_col: 'source',
+                st.session_state.assumption_col: 'assumption'
+            }
+            
+            # Show the mapping
+            st.write("**Column Mapping Preview:**")
+            mapping_df = pd.DataFrame([
+                {"Original Column": k, "Maps to": v} 
+                for k, v in column_mapping.items()
+            ])
+            st.table(mapping_df)
+            
+            # Process button for Format 1
+            if st.button("Apply Format", type="primary"):
+                df = process_format(uploaded_file, sheet_name, 1, column_mapping)
+        
+        # Handle other formats
+        elif st.session_state.format_selected == 2:
+            df = process_format(uploaded_file, sheet_name, 2)
+        elif st.session_state.format_selected == 3:
+            df = process_format(uploaded_file, sheet_name, 3)
+        elif st.session_state.format_selected == 4:
+            df = process_format(uploaded_file, sheet_name, 4)
+        
+        if df is None:
+            st.info('Please upload and process your data with the selected format to continue.')
+            st.stop()
+
+
+        corrected_df = df
+
+        apply_year_correction = st.checkbox("Apply Year Correction (Optional)", value=False)
+
+        
+        if apply_year_correction:
+            ref_year = st.number_input("Enter the reference/correct/latest year:",
+                                    min_value=1900, max_value=2100, value=2023, step=1)
+            corrected_df = year_correction_section(df, peak_year=ref_year)
+            st.write("**Returned Data Preview:**")
+            st.dataframe(corrected_df.head())
+            corrected_df = corrected_df.reset_index()
+            st.dataframe(corrected_df.head())
+            # Pivot the table as described
+            desired_id_cols = ['country', 'source', 'assumption']
+            id_vars = [col for col in desired_id_cols if col in corrected_df.columns]
+
+            metric_cols = [col for col in corrected_df.columns if col not in id_vars]
+            long_df = corrected_df.melt(
+                id_vars=id_vars,
+                value_vars=metric_cols,
+                var_name='metric',
+                value_name='value'
+            )
+            long_df['year'] = ref_year
+            long_df = long_df[['country', 'year', 'metric', 'value', 'source', 'assumption']]
+            corrected_df = long_df
+
+            corrected_df = corrected_df.reset_index(drop=True)
+            corrected_df = pd.concat([df, corrected_df], ignore_index=True)
+            corrected_df = corrected_df.sort_values(by=['country', 'year', 'metric'], ascending=[True, True, True]).reset_index(drop=True)
+
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                corrected_df.to_excel(writer, index=False, sheet_name='Formatted_Data')
+            
+            st.download_button(
+                label=f"📥 Download the Updated Dataframe",
+                data=output.getvalue(),
+                file_name="UpdatedSheet.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else:
+            st.write("No year correction applied.")
+            corrected_df = df
+        
+        
+        st.write("Post-correction DataFrame shape:", corrected_df.shape)
+        st.write("Post-correction DataFrame columns:", corrected_df.columns)
+        st.dataframe(corrected_df.head())
+        
+        # Regression Analysis Section
+        st.markdown("---")
+        st.subheader("Regression Analysis & Prediction")
+
+        # If corrected_df is still the long format, you'll need to select a country/metric
+        country_options = corrected_df['country'].unique().tolist()
+        metric_options = corrected_df['metric'].unique().tolist()
+
+        selected_country = st.selectbox("Select Country", country_options)
+        selected_metric = st.selectbox("Select Metric", metric_options)
+
+        # Filtering for selected group
+        filtered = corrected_df[(corrected_df['country'] == selected_country) &
+                                (corrected_df['metric'] == selected_metric)].sort_values('year')
+
+        years = filtered['year'].values
+        values = filtered['value'].values
+
+        if len(years) < 2:
+            st.error("Not enough data points for regression analysis.")
+        else:
+            # Regression method selection
+            method = st.selectbox(
+                "Select Regression Method",
+                ['linear', 'polynomial', 'ridge', 'lasso', 'logistic', 
+                'decision_tree', 'random_forest', 'svm', 'neural_network']
+            )
+
+            # Custom hyperparameters for relevant methods
+            poly_order = 2
+            alpha = 1.0
+            C = 1.0
+            hidden_layer_sizes = (10,)
+            if method == 'polynomial':
+                poly_order = st.number_input("Polynomial Order", value=2, min_value=2, max_value=5)
+            elif method in ['ridge', 'lasso']:
+                alpha = st.number_input("Alpha (regularization strength)", value=1.0)
+            elif method in ['svm', 'logistic']:
+                C = st.number_input("C (Regularization parameter)", value=1.0)
+            elif method == 'neural_network':
+                hidden_layer = st.text_input("Hidden Layer Sizes (comma sep.)", value="10")
+                try:
+                    hidden_layer_sizes = tuple(map(int, hidden_layer.split(",")))
+                except:
+                    st.warning("Invalid hidden layer sizes, using default (10,)")
+
+            target_year = st.number_input("Target Year for Prediction:", min_value=int(years[-1])+1, 
+                                        value=int(years[-1])+1, step=1)
+
+            ####
+            if corrected_df is not None:
+                st.session_state.df = corrected_df
+            # At top-level, initialize in session state:
+            if 'latest_prediction' not in st.session_state:
+                st.session_state.latest_prediction = None
+            if 'prediction_added' not in st.session_state:
+                st.session_state.prediction_added = False
+
+            # When predicting (inside Predict Value handler):
+            if st.button("Predict Value"):
+                try:
+                    y_pred = regression_analysis(
+                        years=years,
+                        values=values,
+                        target_year=target_year,
+                        method=method,
+                        poly_order=poly_order,
+                        alpha=alpha,
+                        C=C,
+                        hidden_layer_sizes=hidden_layer_sizes
+                    )
+                    st.session_state.latest_prediction = {
+                        'country': selected_country,
+                        'metric': selected_metric,
+                        'year': target_year,
+                        'value': y_pred
+                    }
+                    st.session_state.prediction_added = False  # Clear add flag if new prediction
+                    st.success(f"Predicted value for {selected_country}, {selected_metric}, {target_year}: **{y_pred:.3f}**")
+                except Exception as e:
+                    st.error(f"Regression failed: {e}")
+
+            # If a prediction exists, show add button and value:
+            if st.session_state.latest_prediction:
+                pred = st.session_state.latest_prediction
+                if st.button("Add Prediction to Data Table"):
+                    new_row = {
+                        "country": pred['country'],
+                        "year": pred['year'],
+                        "metric": pred['metric'],
+                        "value": pred['value'],
+                        "source": "regression_prediction",
+                        "assumption": ""
+                    }
+                    if 'df' in st.session_state and st.session_state.df is not None:
+                        st.session_state.df = pd.concat([
+                            st.session_state.df,
+                            pd.DataFrame([new_row])
+                        ], ignore_index=True)
+                        st.session_state.prediction_added = True
+                    else:
+                        st.warning("No main DataFrame found in session state.")
+
+            # Show success if recently added
+            if st.session_state.prediction_added:
+                st.success("Predicted value added to the data table!")
+
+            if 'df' in st.session_state and st.session_state.df is not None:
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    st.session_state.df.to_excel(writer, index=False, sheet_name='Formatted_Data')
+                output.seek(0)  # Important: reset pointer to start
+
+                st.download_button(
+                    label="Download Current Data Table",
+                    data=output.getvalue(),
+                    file_name="UpdatedSheet.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.info("No data available to download yet.")
+
+        
+        st.markdown("---")
+        st.subheader("Data Clustering with KNN Classification")
+        ref_year = st.number_input("Enter the year to reviewed:",
+                                    min_value=1900, max_value=2100, value=2023, step=1)
+        corrected_df = st.session_state.df
+        pdf = pivot_with_assumptions(corrected_df, ref_year)
+        # Reset index before clustering
+        pdf.reset_index(inplace=True)
+
+        # Get numeric columns only for clustering
+        numeric_columns = pdf.select_dtypes(include=[np.number]).columns.tolist()
+
+        # Remove any non-feature columns that shouldn't be used for clustering
+        columns_to_exclude = ['index', 'level_0'] if 'index' in numeric_columns else []
+        if 'level_0' in numeric_columns:
+            columns_to_exclude.append('level_0')
+
+        clustering_features = [col for col in numeric_columns if col not in columns_to_exclude]
+
+        if len(clustering_features) >= 2:
+            # Feature selection only
+            selected_features = st.multiselect(
+                "Select features for clustering:",
+                clustering_features,
+                default=clustering_features[:3] if len(clustering_features) >= 3 else clustering_features[:2]
+            )
+            
+            if len(selected_features) >= 2:
+                # Automatically detect country column
+                country_col = None
+                possible_country_cols = ['country', 'Country', 'COUNTRY', 'entity', 'Entity', 'ENTITY']
+                for col in possible_country_cols:
+                    if col in pdf.columns:
+                        country_col = col
+                        break
+                
+                if country_col:
+                    st.info(f"📍 Using '{country_col}' column for country labels")
+                else:
+                    st.warning("⚠️ No country column detected. Proceeding without country labels.")
+                
+                # Data preparation and filtering
+                n_features = len(selected_features)
+                original_data = pdf.copy()
+                
+                if country_col:
+                    # Remove rows where country column is missing
+                    original_data = original_data.dropna(subset=[country_col])
+                
+                # Count missing values for each row in selected features
+                missing_counts = original_data[selected_features].isna().sum(axis=1)
+                
+                # Categorize data based on missing values
+                complete_data = original_data[missing_counts == 0].copy()  # All columns present
+                partial_data = original_data[missing_counts == 1].copy()   # n-1 columns present
+                insufficient_data = original_data[missing_counts > 1].copy()  # Less than n-1 columns
+                
+                # Display data summary
+                st.info(f"""
+                📊 **Data Summary for {n_features} selected features:**
+                - **Complete data (for clustering)**: {len(complete_data)} countries
+                - **Partial data (n-1 columns, for KNN)**: {len(partial_data)} countries  
+                - **Insufficient data (dropped)**: {len(insufficient_data)} countries
+                - **Total**: {len(original_data)} countries
+                """)
+                
+                # Show countries being clustered
+                if len(complete_data) > 0 and country_col:
+                    with st.expander(f"🎯 Countries Used for Clustering ({len(complete_data)} countries)"):
+                        clustered_countries = complete_data[country_col].tolist()
+                        st.write(", ".join(clustered_countries))
+                
+                # Show dropped countries
+                if len(insufficient_data) > 0 and country_col:
+                    with st.expander(f"🗑️ Countries Dropped (less than {n_features-1} out of {n_features} columns)"):
+                        dropped_countries = insufficient_data[country_col].tolist()
+                        st.write(", ".join(dropped_countries))
+                
+                # Show countries kept aside for KNN
+                if len(partial_data) > 0 and country_col:
+                    with st.expander(f"⏸️ Countries Kept Aside for KNN Classification ({len(partial_data)} countries)"):
+                        kept_aside_countries = partial_data[country_col].tolist()
+                        st.write(", ".join(kept_aside_countries))
+                
+                if len(complete_data) >= 3:  # Need at least 3 countries for meaningful clustering
+                    # Clustering parameters
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        n_clusters = st.slider("Number of clusters:", 2, min(8, len(complete_data)//2), 3)
+                    
+                    with col2:
+                        max_clusters = st.slider("Max clusters for elbow method:", n_clusters, 10, 6)
+                    
+                    with col3:
+                        show_pca = st.checkbox("Show PCA Analysis", value=len(selected_features) > 2)
+                    
+                    # Feature weighting (no normalization)
+                    st.write("**Feature Weights (raw values, no normalization):**")
+                    feature_weights = {}
+                    weight_cols = st.columns(len(selected_features))
+                    for i, feature in enumerate(selected_features):
+                        with weight_cols[i]:
+                            feature_weights[feature] = st.number_input(
+                                f"{feature}:",
+                                min_value=0.0,
+                                value=1.0,
+                                step=0.1,
+                                key=f"weight_{feature}"
+                            )
+                    
+                    # Create columns for both buttons
+                    button_col1, button_col2 = st.columns(2)
+                    
+                    with button_col1:
+                        run_clustering = st.button("🔄 Run Clustering Analysis", key="clustering_button")
+                    
+                    with button_col2:
+                        run_knn = st.button("🤖 Run KNN Classification", key="knn_button", disabled=len(partial_data) == 0)
+                    
+                    # Initialize session state for storing clustering results
+                    if 'clustering_results' not in st.session_state:
+                        st.session_state.clustering_results = None
+                    if 'weighted_data' not in st.session_state:
+                        st.session_state.weighted_data = None
+                    if 'scaler' not in st.session_state:
+                        st.session_state.scaler = None
+                    if 'cluster_labels' not in st.session_state:
+                        st.session_state.cluster_labels = None
+                    
+                    # Run clustering analysis
+                    if run_clustering:
+                        try:
+                            from sklearn.preprocessing import StandardScaler
+                            from sklearn.cluster import KMeans
+                            from sklearn.decomposition import PCA
+                            from sklearn.metrics import silhouette_score
+                            import matplotlib.pyplot as plt
+                            import seaborn as sns
+                            
+                            with st.spinner("Performing clustering analysis..."):
+                                # Prepare clustering data
+                                clustering_data = complete_data[selected_features + ([country_col] if country_col else [])].copy()
+                                
+                                # Standardize the data
+                                scaler = StandardScaler()
+                                standardized_data = scaler.fit_transform(clustering_data[selected_features])
+                                standardized_df = pd.DataFrame(standardized_data, columns=selected_features)
+                                
+                                # Apply weights (no normalization)
+                                for feature in selected_features:
+                                    weight = feature_weights.get(feature, 1.0)
+                                    standardized_df[feature] = standardized_df[feature] * weight
+                                
+                                weighted_data = standardized_df.values
+                                
+                                # Perform K-means clustering
+                                kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+                                cluster_labels = kmeans.fit_predict(weighted_data)
+                                
+                                # Add cluster labels to data
+                                clustering_data['Cluster'] = cluster_labels
+                                
+                                # Store results in session state
+                                st.session_state.clustering_results = clustering_data
+                                st.session_state.weighted_data = weighted_data
+                                st.session_state.scaler = scaler
+                                st.session_state.cluster_labels = cluster_labels
+                                st.session_state.feature_weights = feature_weights
+                                st.session_state.selected_features = selected_features
+                                
+                                st.success("✅ Clustering analysis completed!")
+                                
+                        except Exception as e:
+                            st.error(f"❌ Error during clustering analysis: {str(e)}")
+                            st.exception(e)
+                    
+                    # Display clustering results if available
+                    if st.session_state.clustering_results is not None:
+                        clustering_data = st.session_state.clustering_results
+                        weighted_data = st.session_state.weighted_data
+                        scaler = st.session_state.scaler
+                        cluster_labels = st.session_state.cluster_labels
+                        
+                        # Calculate silhouette score
+                        from sklearn.metrics import silhouette_score
+                        sil_score = silhouette_score(weighted_data, cluster_labels)
+                        
+                        # Display results
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Silhouette Score", f"{sil_score:.3f}")
+                        with col2:
+                            st.metric("Countries Clustered", len(clustering_data))
+                        with col3:
+                            st.metric("Features Used", len(selected_features))
+                        
+                        # Elbow Method
+                        st.subheader("📊 Elbow Method Analysis")
+                        K_max = min(max_clusters + 1, len(clustering_data))
+                        inertia = []
+                        K_range = range(1, K_max + 1)
+                        
+                        for K in K_range:
+                            if K <= len(clustering_data):
+                                from sklearn.cluster import KMeans
+                                kmeans_temp = KMeans(n_clusters=K, random_state=42, n_init=10)
+                                kmeans_temp.fit(weighted_data)
+                                inertia.append(kmeans_temp.inertia_)
+                        
+                        import matplotlib.pyplot as plt
+                        fig_elbow, ax = plt.subplots(figsize=(10, 6))
+                        ax.plot(K_range[:len(inertia)], inertia, marker='o', linewidth=2, markersize=8)
+                        ax.plot(n_clusters, inertia[n_clusters-1], marker='o', markersize=12, 
+                            markerfacecolor='red', markeredgecolor='black', markeredgewidth=2)
+                        ax.set_title('Elbow Method for Optimal K', fontsize=14)
+                        ax.set_xlabel('Number of Clusters (K)', fontsize=12)
+                        ax.set_ylabel('Inertia', fontsize=12)
+                        ax.grid(True, alpha=0.3)
+                        ax.legend(['Inertia', f'Selected K={n_clusters}'], loc='upper right')
+                        st.pyplot(fig_elbow)
+                        plt.close()
+                        
+                        # Cluster Visualization
+                        st.subheader("📈 Cluster Visualization")
+                        
+                        if len(selected_features) == 2:
+                            # For exactly 2 features: show direct plot only
+                            fig, ax = plt.subplots(figsize=(12, 8))
+                            
+                            scatter = ax.scatter(
+                                clustering_data[selected_features[0]], 
+                                clustering_data[selected_features[1]], 
+                                c=clustering_data['Cluster'], 
+                                cmap='viridis', 
+                                alpha=0.7, 
+                                s=100, 
+                                edgecolor='black',
+                                linewidth=0.5
+                            )
+                            
+                            if country_col:
+                                for i in range(len(clustering_data)):
+                                    ax.annotate(
+                                        clustering_data[country_col].iloc[i], 
+                                        (clustering_data[selected_features[0]].iloc[i], 
+                                        clustering_data[selected_features[1]].iloc[i]), 
+                                        fontsize=8, alpha=0.8, ha='center'
+                                    )
+                            
+                            ax.set_title(f'Cluster Visualization: {selected_features[0]} vs {selected_features[1]}', fontsize=14)
+                            ax.set_xlabel(selected_features[0], fontsize=12)
+                            ax.set_ylabel(selected_features[1], fontsize=12)
+                            ax.grid(True, alpha=0.3)
+                            plt.colorbar(scatter, ax=ax, label='Cluster')
+                            
+                        else:
+                            # For >2 features: show PCA plot only
+                            from sklearn.decomposition import PCA
+                            pca_vis = PCA(n_components=2)
+                            reduced_data = pca_vis.fit_transform(weighted_data)
+                            
+                            fig, ax = plt.subplots(figsize=(12, 8))
+                            
+                            scatter = ax.scatter(
+                                reduced_data[:, 0], 
+                                reduced_data[:, 1], 
+                                c=clustering_data['Cluster'], 
+                                cmap='viridis', 
+                                alpha=0.7, 
+                                s=100, 
+                                edgecolor='black',
+                                linewidth=0.5
+                            )
+                            
+                            if country_col:
+                                for i in range(len(clustering_data)):
+                                    ax.annotate(
+                                        clustering_data[country_col].iloc[i], 
+                                        (reduced_data[i, 0], reduced_data[i, 1]), 
+                                        fontsize=8, alpha=0.8, ha='center'
+                                    )
+                            
+                            ax.set_title('PCA Cluster Visualization (All Features)', fontsize=14)
+                            ax.set_xlabel(f'PC1 ({pca_vis.explained_variance_ratio_[0]:.2%} variance)', fontsize=12)
+                            ax.set_ylabel(f'PC2 ({pca_vis.explained_variance_ratio_[1]:.2%} variance)', fontsize=12)
+                            ax.grid(True, alpha=0.3)
+                            plt.colorbar(scatter, ax=ax, label='Cluster')
+                            
+                            # PCA Loadings Analysis
+                            if show_pca:
+                                st.subheader("🎯 PCA Loadings Analysis")
+                                loadings = pca_vis.components_.T * np.sqrt(pca_vis.explained_variance_)
+                                loadings_df = pd.DataFrame(
+                                    loadings,
+                                    index=selected_features,
+                                    columns=['PC1', 'PC2']
+                                )
+                                st.dataframe(loadings_df.round(4), use_container_width=True)
+                        
+                        st.pyplot(fig)
+                        plt.close()
+                        
+                        # Cluster Analysis
+                        st.subheader("🌍 Cluster Assignments (Complete Data)")
+                        
+                        for cluster_id in sorted(clustering_data['Cluster'].unique()):
+                            cluster_countries = clustering_data[clustering_data['Cluster'] == cluster_id]
+                            
+                            with st.expander(f"Cluster {cluster_id} ({len(cluster_countries)} countries)"):
+                                # Show countries in this cluster
+                                if country_col:
+                                    st.write("**Countries:**")
+                                    countries_list = cluster_countries[country_col].tolist()
+                                    st.write(", ".join(countries_list))
+                                
+                                # Feature statistics for this cluster
+                                st.write("**Feature Statistics:**")
+                                cluster_stats = cluster_countries[selected_features].describe().round(3)
+                                st.dataframe(cluster_stats, use_container_width=True)
+                    
+                    # KNN Classification (separate from clustering results)
+                    if run_knn and st.session_state.clustering_results is not None:
+                        st.subheader("🤖 KNN Classification for Partial Data")
+                        
+                        # KNN neighbors = number of features
+                        k_neighbors = len(selected_features)
+                        
+                        st.info(f"Using K={k_neighbors} neighbors (equal to number of features: {len(selected_features)})")
+                        
+                        try:
+                            from sklearn.neighbors import KNeighborsClassifier
+                            
+                            with st.spinner("Running KNN classification..."):
+                                # Get stored clustering results
+                                weighted_data = st.session_state.weighted_data
+                                cluster_labels = st.session_state.cluster_labels
+                                scaler = st.session_state.scaler
+                                feature_weights = st.session_state.feature_weights
+                                selected_features = st.session_state.selected_features
+                                
+                                # Train KNN on complete data
+                                knn = KNeighborsClassifier(n_neighbors=k_neighbors)
+                                knn.fit(weighted_data, cluster_labels)
+                                
+                                # Prepare partial data for classification
+                                knn_results = []
+                                
+                                for idx, row in partial_data.iterrows():
+                                    # Find which feature is missing
+                                    missing_features = [col for col in selected_features if pd.isna(row[col])]
+                                    available_features = [col for col in selected_features if not pd.isna(row[col])]
+                                    
+                                    # Fill missing values with cluster centroids
+                                    for missing_feat in missing_features:
+                                        # Use overall mean as a simple imputation strategy
+                                        row[missing_feat] = complete_data[missing_feat].mean()
+                                    
+                                    # Standardize and apply weights
+                                    standardized_row = scaler.transform([row[selected_features]])[0]
+                                    for i, feature in enumerate(selected_features):
+                                        weight = feature_weights.get(feature, 1.0)
+                                        standardized_row[i] = standardized_row[i] * weight
+                                    
+                                    # Predict cluster
+                                    predicted_cluster = knn.predict([standardized_row])[0]
+                                    prediction_proba = knn.predict_proba([standardized_row])[0]
+                                    confidence = max(prediction_proba)
+                                    
+                                    knn_results.append({
+                                        'Country': row[country_col] if country_col else f'Row_{idx}',
+                                        'Predicted_Cluster': predicted_cluster,
+                                        'Confidence': confidence,
+                                        'Missing_Feature': ', '.join(missing_features),
+                                        'Available_Features': ', '.join(available_features)
+                                    })
+                                
+                                knn_results_df = pd.DataFrame(knn_results)
+                                
+                                # Display KNN results
+                                st.write(f"**KNN Classification Results ({len(knn_results_df)} countries):**")
+                                st.dataframe(knn_results_df, use_container_width=True)
+                                
+                                # Show KNN results by cluster
+                                st.subheader("🔍 KNN Results by Cluster")
+                                for cluster_id in sorted(knn_results_df['Predicted_Cluster'].unique()):
+                                    cluster_knn = knn_results_df[knn_results_df['Predicted_Cluster'] == cluster_id]
+                                    
+                                    with st.expander(f"KNN Cluster {cluster_id} ({len(cluster_knn)} countries)"):
+                                        if country_col:
+                                            countries_knn = cluster_knn['Country'].tolist()
+                                            st.write(f"**Countries:** {', '.join(countries_knn)}")
+                                        
+                                        avg_confidence = cluster_knn['Confidence'].mean()
+                                        st.write(f"**Average Confidence:** {avg_confidence:.3f}")
+                                        
+                                        st.dataframe(cluster_knn[['Country', 'Confidence', 'Missing_Feature']], use_container_width=True)
+                                
+                                # Store KNN results in session state for download
+                                st.session_state.knn_results = knn_results_df
+                                
+                        except Exception as e:
+                            st.error(f"❌ Error during KNN classification: {str(e)}")
+                            st.exception(e)
+                    
+                    elif run_knn and st.session_state.clustering_results is None:
+                        st.warning("⚠️ Please run clustering analysis first before KNN classification.")
+                    
+                    # Download options (always available if clustering is done)
+                    if st.session_state.clustering_results is not None:
+                        with st.expander("📥 Download Results"):
+                            col1, col2, col3 = st.columns(3)
+                            
+                            with col1:
+                                # Clustering results
+                                clustering_csv = st.session_state.clustering_results.to_csv(index=False)
+                                st.download_button(
+                                    "📥 Download Clustering Results",
+                                    clustering_csv,
+                                    "clustering_results.csv",
+                                    "text/csv"
+                                )
+                            
+                            with col2:
+                                if 'knn_results' in st.session_state and st.session_state.knn_results is not None:
+                                    knn_csv = st.session_state.knn_results.to_csv(index=False)
+                                    st.download_button(
+                                        "📥 Download KNN Results",
+                                        knn_csv,
+                                        "knn_classification_results.csv",
+                                        "text/csv"
+                                    )
+                            
+                            with col3:
+                                # Combined results
+                                if 'knn_results' in st.session_state and st.session_state.knn_results is not None:
+                                    all_results = st.session_state.clustering_results.copy()
+                                    all_results['Data_Type'] = 'Complete'
+                                    
+                                    knn_for_download = partial_data.copy()
+                                    knn_for_download['Cluster'] = st.session_state.knn_results['Predicted_Cluster'].values
+                                    knn_for_download['Data_Type'] = 'KNN_Classified'
+                                    
+                                    combined_results = pd.concat([all_results, knn_for_download], ignore_index=True)
+                                    combined_csv = combined_results.to_csv(index=False)
+                                    st.download_button(
+                                        "📥 Download All Results",
+                                        combined_csv,
+                                        "all_clustering_results.csv",
+                                        "text/csv"
+                                    )
+                
+                else:
+                    st.warning(f"⚠️ Need at least 3 countries with complete data for clustering. Currently have {len(complete_data)}.")
+            
+            else:
+                st.warning("⚠️ Please select at least 2 features for clustering.")
+
+        else:
+            st.warning("⚠️ Not enough numeric columns available for clustering.")
+
+
+
+
+def year_correction_section(df, peak_year=2023):
+    st.write("----")
+    st.write("## Year Correction")
+    
+    pdf = pivot_with_assumptions(df, peak_year)
+    st.write("### Original Data Sample")
+    st.dataframe(df.head(10))
+
+    st.write("### Pivot Table Sample")
+    st.dataframe(pdf.head(10))
+
+    missing_by_column = pdf.isnull().sum()
+    total_missing = missing_by_column.sum()
+
+    st.write("Missing values by column:")
+    st.write(missing_by_column)
+    st.write(f"**Total missing values:** {total_missing}")
+
+    # If nothing missing, exit early and return the unmodified pivot
+    if total_missing == 0:
+        st.success("No missing values found in the pivot table - no interpolation/extrapolation needed!")
+        return pdf
+
+    # --- 🌟 New: User choice between interpolation/extrapolation ---
+    fix_method = st.radio(
+        "Fill method:",
+        ["Interpolate", "Extrapolate"],
+        help="Choose whether to interpolate (fill between known years) or extrapolate (extend beyond known years)."
+    )
+
+    if fix_method == "Interpolate":
+        methods = ['linear', 'polynomial', 'spline', 'nearest_neighbour', 'piecewise_constant', 'logarithmic']
+        selected_method = st.selectbox("Select interpolation method:", methods)
+        interpolate_now = st.checkbox("Run Interpolation", value=False)
+        if interpolate_now:
+            try:
+                original_missing = total_missing
+                result = interpolate_col(pdf, df, peak_year=peak_year, columns='None', method=selected_method)
+                # -- rest of your code unchanged, see below
+            except Exception as e:
+                st.error(f"Interpolation failed for {selected_method}: {str(e)}")
+                st.exception(e)
+                return pdf
+        else:
+            st.info("Interpolation not run. Returning pivot table as is.")
+            return pdf
+
+    elif fix_method == "Extrapolate":
+        methods = ['linear', 'polynomial', 'spline', 'nearest_neighbour', 'piecewise_constant', 'logarithmic']
+        selected_method = st.selectbox("Select extrapolation method:", methods)
+        # Extra: (provide polynomial order & moving average window for advanced users, if needed)
+        if selected_method == 'polynomial':
+            order = st.number_input("Polynomial order (for extrapolation):", min_value=1, max_value=5, value=2)
+        else:
+            order = 2  # default value
+
+        ma_window = st.number_input("Moving average window (for extrapolation):", min_value=1, max_value=10, value=3)
+
+        extrapolate_now = st.checkbox("Run Extrapolation", value=False)
+        if extrapolate_now:
+            try:
+                original_missing = total_missing
+                # ------- Run extrapolation -------
+                result = extrapolate_col(
+                    pdf, df,
+                    peak_year=peak_year, columns='None', method=selected_method, order=order, ma_window=ma_window
+                )
+                # -- rest of your code as with interpolation, see below
+            except Exception as e:
+                st.error(f"Extrapolation failed for {selected_method}: {str(e)}")
+                st.exception(e)
+                return pdf
+        else:
+            st.info("Extrapolation not run. Returning pivot table as is.")
+            return pdf
+
+    # ---- Shared post-processing, if we have a result ----
+    if 'result' in locals() and result is not None:
+        final_missing = result.isnull().sum().sum()
+        interpolated_values = original_missing - final_missing
+
+        st.write(f"**Original missing:** {original_missing}")
+        st.write(f"**Final missing:** {final_missing}")
+        st.write(f"**Values filled:** {interpolated_values}")
+
+        if interpolated_values > 0:
+            original_nulls = pdf.isnull().sum()
+            final_nulls = result.isnull().sum()
+            changed_columns = original_nulls - final_nulls
+            affected_cols = changed_columns[changed_columns > 0].to_dict()
+            st.write("**Columns affected:**")
+            st.write(affected_cols)
+
+            st.write("**Sample of filled data:**")
+            st.dataframe(result.head(10))
+        else:
+            st.warning("No values were filled!")
+
+        # Return the filled dataframe  
+        return result
+
+    st.error("Unexpected error: No result generated.")
+    return pdf
 
 def interpolate_col(pdf, df, peak_year=2023, columns='None', method='linear'):
     """
@@ -266,6 +1184,63 @@ def regression_analysis(years, values, target_year, method='linear', poly_order=
 
     return method_dispatch[method]()
 
+def process_format(uploaded_file, sheet_name, format_num, column_mapping=None):
+    """Process the uploaded file with the selected format"""
+    
+    try:
+        # Reset file pointer
+        uploaded_file.seek(0)
+        
+        # Apply the selected format using your existing functions
+        if format_num == 1:
+            df = df_format1(uploaded_file, sheet_name, column_mapping)
+            format_name = "Format 1 - Same form, different labels"
+            output_filename = "Testing1.xlsx"
+        elif format_num == 2:
+            df = df_format2(uploaded_file, sheet_name)
+            format_name = "Format 2 - Years in different columns"
+            output_filename = "Testing2.xlsx"
+        elif format_num == 3:
+            df = df_format3(uploaded_file, sheet_name)
+            format_name = "Format 3 - Year in rows, metrics in columns"
+            output_filename = "Testing3.xlsx"
+        elif format_num == 4:
+            df = df_format4(uploaded_file, sheet_name)
+            format_name = "Format 4 - Metric in columns with labelled years"
+            output_filename = "Testing4.xlsx"
+        
+        # Display results
+        st.success(f"✅ {format_name} applied successfully!")
+        
+        # Show formatted data
+        st.write("**Formatted Data:**")
+        st.dataframe(df)
+        
+        # Show data info
+        st.write("**Data Info:**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Rows", df.shape[0])
+        with col2:
+            st.metric("Columns", df.shape[1])
+        with col3:
+            st.metric("Memory Usage", f"{df.memory_usage(deep=True).sum()/1024:.2f} KB")
+        
+        # Create download button
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Formatted_Data')
+        
+        st.download_button(
+            label=f"Download {format_name}",
+            data=output.getvalue(),
+            file_name=output_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        return df
+    except Exception as e:
+        st.error(f"Error processing file: {str(e)}")
+        st.write("Please check your file format and try again.")
 #Function that has straight up same values:
 def df_format1(file_name, sheet_name='Sheet1', column_mapping=None, header=0, usecols=None, is_excel=True):
     from pandas import read_excel, read_csv
@@ -1859,3 +2834,7 @@ def analyze_data_coverage_patterns(df, min_data_threshold=0.8):
     }
     
     return analysis
+
+
+if __name__ == "__main__":
+    main()
