@@ -315,3 +315,94 @@ async def year_correction(req: YearCorrectionRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 3 — Regression
+# ─────────────────────────────────────────────────────────────────────────────
+
+class RegressionRequest(BaseModel):
+    session_id: str
+    country: str
+    metric: str
+    target_year: int
+    method: str = "linear"
+    poly_order: int = 2
+    alpha: float = 1.0
+    C: float = 1.0
+    hidden_layers: str = "10"   # comma-separated
+
+
+class AddPredictionRequest(BaseModel):
+    session_id: str
+    country: str
+    metric: str
+    year: int
+    value: float
+
+
+@app.post("/regression/predict")
+async def predict(req: RegressionRequest):
+    session = sessions.get(req.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
+
+    df: pd.DataFrame = session["df"]
+    filtered = (
+        df[(df["country"] == req.country) & (df["metric"] == req.metric)]
+        .sort_values("year")
+    )
+
+    if len(filtered) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Not enough data points for regression (need ≥ 2).",
+        )
+
+    years  = filtered["year"].values
+    values = filtered["value"].values
+
+    try:
+        hidden_layer_sizes = tuple(int(x) for x in req.hidden_layers.split(","))
+    except Exception:
+        hidden_layer_sizes = (10,)
+
+    try:
+        y_pred = regression_analysis(
+            years=years,
+            values=values,
+            target_year=req.target_year,
+            method=req.method,
+            poly_order=req.poly_order,
+            alpha=req.alpha,
+            C=req.C,
+            hidden_layer_sizes=hidden_layer_sizes,
+        )
+        return {
+            "predicted_value": float(y_pred),
+            "country":  req.country,
+            "metric":   req.metric,
+            "year":     req.target_year,
+            "method":   req.method,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/regression/add-prediction")
+async def add_prediction(req: AddPredictionRequest):
+    session = sessions.get(req.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
+
+    df: pd.DataFrame = session["df"]
+    new_row = pd.DataFrame([{
+        "country":    req.country,
+        "year":       req.year,
+        "metric":     req.metric,
+        "value":      req.value,
+        "source":     "regression_prediction",
+        "assumption": "",
+    }])
+    sessions[req.session_id]["df"] = pd.concat([df, new_row], ignore_index=True)
+    return {"status": "added", "rows": int(sessions[req.session_id]["df"].shape[0])}
