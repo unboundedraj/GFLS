@@ -197,3 +197,121 @@ def download_excel(session_id: str, filename: str = "data.xlsx"):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 2 — Year Correction (Interpolate / Extrapolate)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class YearCorrectionRequest(BaseModel):
+    session_id: str
+    ref_year: int = 2023
+    fix_method: str = "Interpolate"    # "Interpolate" | "Extrapolate"
+    interp_method: str = "linear"
+    poly_order: int = 2
+    ma_window: int = 3
+
+
+@app.post("/year-correction")
+async def year_correction(req: YearCorrectionRequest):
+    """
+    Pivot the session DataFrame to detect missing values, then interpolate
+    or extrapolate them.  Mirrors the Streamlit year_correction_section():
+
+      1. pivot_with_assumptions(df, ref_year)  → pivot table (country as INDEX)
+      2. interpolate_col / extrapolate_col     → filled pivot (country still as INDEX)
+      3. reset_index() + melt                 → back to long format
+      4. concat with original df              → corrected long df saved to session
+
+    Returns a preview of the corrected long DataFrame.
+    """
+    session = sessions.get(req.session_id)
+    if not session:
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found. Please re-upload your file.",
+        )
+
+    df: pd.DataFrame = session["df"]
+
+    try:
+        # Ensure value/year are numeric before pivoting (guards against
+        # object-dtype values that cause .mean() to fail during pivot).
+        df = _coerce_numeric(df)
+
+        # ── 1. Pivot ────────────────────────────────────────────────────────
+        pdf = pivot_with_assumptions(df, req.ref_year)
+
+        original_missing = int(pdf.isnull().sum().sum())
+
+        # ── 2. Fill missing values ───────────────────────────────────────────
+        # IMPORTANT: interpolate_col / extrapolate_col expect `columns='None'`
+        # as their third positional arg.  Both functions return a pivot DataFrame
+        # with country still in the INDEX (not as a column).
+        if req.fix_method == "Interpolate":
+            result = interpolate_col(
+                pdf, df,
+                peak_year=req.ref_year,
+                columns="None",
+                method=req.interp_method,
+            )
+        else:
+            result = extrapolate_col(
+                pdf, df,
+                peak_year=req.ref_year,
+                columns="None",
+                method=req.interp_method,
+                order=req.poly_order,
+                ma_window=req.ma_window,
+            )
+
+        final_missing = int(result.isnull().sum().sum())
+
+        # ── 3. Melt corrected pivot back to long format ──────────────────────
+        # `result` has country in the INDEX.  Reset it first so it becomes a column.
+        result_reset = result.reset_index()   # country is now a proper column
+
+        # Identify id-variable columns that exist after reset_index
+        id_candidates = ["country", "source", "assumption"]
+        id_vars = [c for c in id_candidates if c in result_reset.columns]
+
+        # Everything else is a metric column
+        metric_cols = [c for c in result_reset.columns if c not in id_vars]
+
+        long_df = result_reset.melt(
+            id_vars=id_vars,
+            value_vars=metric_cols,
+            var_name="metric",
+            value_name="value",
+        )
+        long_df["year"] = req.ref_year
+
+        # Re-order to canonical column order, filling any missing cols with None
+        for col in ["country", "year", "metric", "value", "source", "assumption"]:
+            if col not in long_df.columns:
+                long_df[col] = None
+        long_df = long_df[["country", "year", "metric", "value", "source", "assumption"]]
+
+        # ── 4. Concat + sort, save back to session ───────────────────────────
+        corrected = (
+            pd.concat([df, long_df], ignore_index=True)
+            .sort_values(["country", "year", "metric"])
+            .reset_index(drop=True)
+        )
+        sessions[req.session_id]["df"] = corrected
+
+        return {
+            "original_missing": original_missing,
+            "final_missing":    final_missing,
+            "values_filled":    original_missing - final_missing,
+            "shape": {
+                "rows": int(corrected.shape[0]),
+                "cols": int(corrected.shape[1]),
+            },
+            "preview": corrected.head(10).replace({np.nan: None}).to_dict(orient="records"),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
