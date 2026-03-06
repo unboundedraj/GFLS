@@ -59,3 +59,123 @@ def _coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
     if "year" in df.columns:
         df["year"] = pd.to_numeric(df["year"], errors="coerce")
     return df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 1 — Upload & Preview
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/preview-columns")
+async def preview_columns(
+    file: UploadFile = File(...),
+    file_type: str = Form(...),       # "Excel" | "CSV"
+    sheet_name: str = Form("Sheet1"),
+):
+    """
+    Return raw column names and first 10 rows from an uploaded file.
+    Called immediately on file drop — before any format is chosen.
+    """
+    contents = await file.read()
+    buf = BytesIO(contents)
+    try:
+        if file_type == "Excel":
+            df_full = pd.read_excel(buf, sheet_name=sheet_name)
+        else:
+            df_full = pd.read_csv(buf)
+
+        df_preview = df_full.head(10)
+        return {
+            "columns":    df_full.columns.tolist(),
+            "preview":    df_preview.replace({np.nan: None}).to_dict(orient="records"),
+            "total_rows": int(len(df_full)),
+            "total_cols": int(len(df_full.columns)),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 1 — Apply Format
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    file_type: str = Form(...),          # "Excel" | "CSV"
+    sheet_name: str = Form("Sheet1"),
+    format_num: int = Form(...),         # 1 | 2 | 3 | 4
+    column_mapping: Optional[str] = Form(None),  # JSON string for format 1
+    session_id: str = Form(...),
+):
+    """
+    Apply a format transformation to the uploaded file and store in session.
+    Returns a JSON preview and shape info — mirroring the Streamlit
+    "Formatted Data" preview shown after clicking a Format button.
+    """
+    contents = await file.read()
+    buf = BytesIO(contents)
+
+    try:
+        mapping = json.loads(column_mapping) if column_mapping else None
+
+        if format_num == 1:
+            df = df_format1(buf, sheet_name=sheet_name,
+                            column_mapping=mapping,
+                            is_excel=(file_type == "Excel"))
+        elif format_num == 2:
+            df = df_format2(buf, sheet_name=sheet_name,
+                            is_excel=(file_type == "Excel"))
+        elif format_num == 3:
+            df = df_format3(buf, sheet_name=sheet_name,
+                            is_excel=(file_type == "Excel"))
+        elif format_num == 4:
+            df = df_format4(buf, sheet_name=sheet_name,
+                            is_excel=(file_type == "Excel"))
+        else:
+            raise HTTPException(status_code=400, detail="Invalid format_num")
+
+        # Coerce value/year to numeric BEFORE saving to session.
+        # Prevents "agg function failed [how->mean, dtype->object]" when
+        # pivot_with_assumptions() calls .mean() on the value column.
+        df = _coerce_numeric(df)
+
+        # Persist formatted df to session
+        sessions[session_id] = {"df": df}
+
+        # Pre-compute pivot feature names for the clustering step
+        pivot_features = []
+        if "metric" in df.columns and "country" in df.columns and "year" in df.columns:
+            try:
+                available_years = sorted(df["year"].dropna().unique().tolist())
+                sample_year = (
+                    2023 if 2023 in available_years
+                    else (max(available_years) if available_years else 2023)
+                )
+                pdf_sample = pivot_with_assumptions(df, sample_year)
+                if not pdf_sample.empty:
+                    skip = {"source", "assumption", "country", "Country", "COUNTRY"}
+                    pivot_features = [c for c in pdf_sample.columns if c not in skip]
+                else:
+                    pivot_features = _safe_list(df["metric"].unique())
+            except Exception as e:
+                print(f"Pivot feature pre-computation error: {e}")
+                pivot_features = _safe_list(df["metric"].unique()) if "metric" in df.columns else []
+
+        return {
+            "rows":           int(df.shape[0]),
+            "cols":           int(df.shape[1]),
+            "columns":        df.columns.tolist(),
+            "countries":      _safe_list(df["country"].unique()) if "country" in df.columns else [],
+            "metrics":        _safe_list(df["metric"].unique())  if "metric"  in df.columns else [],
+            "pivot_features": pivot_features,
+            "available_years": (
+                sorted(_safe_list(df["year"].dropna().unique()))
+                if "year" in df.columns else []
+            ),
+            "preview": df.head(10).replace({np.nan: None}).to_dict(orient="records"),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
