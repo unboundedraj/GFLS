@@ -669,3 +669,9 @@ async def diagnose_clustering(session_id: str, ref_year: int = 2023):
         diagnosis["pivot_error"] = str(e)
 
     return diagnosis
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
