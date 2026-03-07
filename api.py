@@ -406,3 +406,266 @@ async def add_prediction(req: AddPredictionRequest):
     }])
     sessions[req.session_id]["df"] = pd.concat([df, new_row], ignore_index=True)
     return {"status": "added", "rows": int(sessions[req.session_id]["df"].shape[0])}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 4 — Clustering & KNN
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ClusterRequest(BaseModel):
+    session_id: str
+    ref_year: int = 2023
+    selected_features: List[str]
+    n_clusters: int = 3
+    max_clusters: int = 6
+    feature_weights: dict = {}
+
+
+class KNNRequest(BaseModel):
+    session_id: str
+    ref_year: int = 2023
+    selected_features: List[str]
+    feature_weights: dict = {}
+
+
+@app.post("/clustering/run")
+async def run_clustering(req: ClusterRequest):
+    session = sessions.get(req.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
+
+    df: pd.DataFrame = session["df"]
+
+    try:
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.cluster import KMeans
+        from sklearn.metrics import silhouette_score
+
+        # Validate required columns
+        required_cols = ["country", "metric", "year", "value"]
+        missing_cols = [c for c in required_cols if c not in df.columns]
+        if missing_cols:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Data missing required columns: {missing_cols}",
+            )
+
+        # Use latest available year if requested year not present
+        available_years = sorted(_safe_list(df["year"].dropna().unique()))
+        ref_year = (
+            req.ref_year
+            if req.ref_year in available_years
+            else (max(available_years) if available_years else 2023)
+        )
+
+        pdf = pivot_with_assumptions(df, ref_year)
+        if pdf.empty:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No data found for year {ref_year}. Available: {available_years}",
+            )
+
+        pdf.reset_index(inplace=True)
+
+        country_col = next(
+            (c for c in ["country", "Country", "COUNTRY"] if c in pdf.columns), None
+        )
+
+        available_features = [
+            c for c in pdf.columns
+            if c not in ["country", "Country", "COUNTRY", "source", "assumption"]
+        ]
+        if not available_features:
+            raise HTTPException(status_code=400, detail="No metric features found in pivoted data.")
+
+        valid_features = [f for f in req.selected_features if f in available_features]
+        if not valid_features:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Selected features not in data. Available: {available_features}",
+            )
+
+        # Coerce all selected feature columns to float (defensive guard —
+        # in case any metric value slipped through as object dtype).
+        for feat in valid_features:
+            pdf[feat] = pd.to_numeric(pdf[feat], errors="coerce")
+
+        # Split into complete / partial / insufficient
+        missing_counts    = pdf[valid_features].isna().sum(axis=1)
+        complete_data     = pdf[missing_counts == 0].copy()
+        partial_data      = pdf[missing_counts == 1].copy()
+        insufficient_data = pdf[missing_counts  > 1].copy()
+
+        if len(complete_data) < 3:
+            raise HTTPException(
+                status_code=400,
+                detail="Need at least 3 countries with complete data for clustering.",
+            )
+
+        # Standardise + weight
+        scaler   = StandardScaler()
+        std_data = scaler.fit_transform(complete_data[valid_features])
+        std_df   = pd.DataFrame(std_data, columns=valid_features)
+        for feat in valid_features:
+            std_df[feat] *= req.feature_weights.get(feat, 1.0)
+
+        weighted = std_df.values
+        kmeans   = KMeans(n_clusters=req.n_clusters, random_state=42, n_init=10)
+        labels   = kmeans.fit_predict(weighted)
+        complete_data = complete_data.copy()
+        complete_data["Cluster"] = labels
+
+        sil     = float(silhouette_score(weighted, labels))
+        k_range = range(1, min(req.max_clusters + 1, len(complete_data)) + 1)
+        inertia = []
+        for k in k_range:
+            km = KMeans(n_clusters=k, random_state=42, n_init=10)
+            km.fit(weighted)
+            inertia.append(float(km.inertia_))
+
+        # Persist clustering state for KNN
+        sessions[req.session_id]["clustering"] = {
+            "complete_data":     complete_data,
+            "partial_data":      partial_data,
+            "weighted_data":     weighted,
+            "scaler":            scaler,
+            "cluster_labels":    labels,
+            "selected_features": valid_features,
+            "feature_weights":   req.feature_weights,
+            "country_col":       country_col,
+        }
+
+        cluster_cols = [country_col, "Cluster"] if country_col else ["Cluster"]
+        return {
+            "silhouette_score":       sil,
+            "countries_clustered":    int(len(complete_data)),
+            "partial_countries":      int(len(partial_data)),
+            "insufficient_countries": int(len(insufficient_data)),
+            "features_used":          int(len(valid_features)),
+            "elbow": {"k": list(k_range), "inertia": inertia},
+            "clusters": (
+                complete_data[cluster_cols]
+                .replace({np.nan: None})
+                .to_dict(orient="records")
+            ),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/clustering/knn")
+async def run_knn(req: KNNRequest):
+    session = sessions.get(req.session_id)
+    if not session or "clustering" not in session:
+        raise HTTPException(status_code=404, detail="Please run clustering first.")
+
+    clust = session["clustering"]
+
+    try:
+        from sklearn.neighbors import KNeighborsClassifier
+
+        complete    = clust["complete_data"]
+        partial     = clust["partial_data"]
+        features    = clust["selected_features"]
+        labels      = clust["cluster_labels"]
+        country_col = clust["country_col"]
+        X_train     = clust["weighted_data"]
+
+        knn = KNeighborsClassifier(n_neighbors=min(5, len(complete)))
+        knn.fit(X_train, labels)
+
+        results = []
+        for _, row in partial.iterrows():
+            missing_feat = [f for f in features if pd.isna(row[f])]
+            if not missing_feat:
+                continue
+            missing_feat = missing_feat[0]
+
+            imputed = [
+                row[f] if not pd.isna(row[f]) else float(complete[f].mean())
+                for f in features
+            ]
+            imputed_scaled = clust["scaler"].transform([imputed])[0]
+            for i, feat in enumerate(features):
+                imputed_scaled[i] *= req.feature_weights.get(feat, 1.0)
+
+            probs      = knn.predict_proba([imputed_scaled])[0]
+            pred_class = int(knn.predict([imputed_scaled])[0])
+            confidence = float(max(probs))
+
+            results.append({
+                "country":           row[country_col] if country_col else "Unknown",
+                "predicted_cluster": pred_class,
+                "confidence":        round(confidence, 4),
+                "missing_feature":   missing_feat,
+            })
+
+        return {"knn_results": results, "classified": len(results)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/clustering/download/{session_id}")
+def download_clustering(session_id: str):
+    session = sessions.get(session_id)
+    if not session or "clustering" not in session:
+        raise HTTPException(status_code=404, detail="No clustering results found.")
+    df = session["clustering"]["complete_data"]
+    buf = BytesIO()
+    df.to_csv(buf, index=False)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="clustering_results.csv"'},
+    )
+
+
+# ── Debug endpoint ────────────────────────────────────────────────────────────
+@app.post("/clustering/diagnose/{session_id}")
+async def diagnose_clustering(session_id: str, ref_year: int = 2023):
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
+
+    df: pd.DataFrame = session["df"]
+    diagnosis: dict = {
+        "raw_data": {
+            "shape":   list(df.shape),
+            "columns": df.columns.tolist(),
+        },
+        "required_columns_present": all(
+            c in df.columns for c in ["country", "metric", "year", "value"]
+        ),
+    }
+
+    if "year" in df.columns:
+        available_years = sorted(_safe_list(df["year"].dropna().unique()))
+        diagnosis["available_years"] = available_years
+        diagnosis["requested_year"]  = ref_year
+        diagnosis["year_in_data"]    = ref_year in available_years
+
+    try:
+        pdf = pivot_with_assumptions(df, ref_year)
+        diagnosis["pivot"] = {
+            "shape":      list(pdf.shape),
+            "columns":    pdf.columns.tolist(),
+            "index_name": pdf.index.name,
+            "empty":      bool(pdf.empty),
+        }
+        if not pdf.empty:
+            skip = {"source", "assumption"}
+            diagnosis["available_features"] = [c for c in pdf.columns if c not in skip]
+            diagnosis["pivot_preview"] = (
+                pdf.head(3).replace({np.nan: None}).to_dict(orient="records")
+            )
+    except Exception as e:
+        diagnosis["pivot_error"] = str(e)
+
+    return diagnosis
