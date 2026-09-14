@@ -1,16 +1,37 @@
-# React + Vite
+# gfls-ui
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Vite front end for GFLS Automation. It guides the user through upload, year correction,
+regression, clustering and KNN classification, calling the FastAPI backend in the repository root.
 
-Currently, two official plugins are available:
+## Scripts
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+```bash
+npm install      # install dependencies
+npm run dev      # dev server on http://localhost:5173
+npm run build    # production build into dist/
+npm run preview  # serve the production build
+npm run lint     # ESLint
+```
 
-## React Compiler
+## Configuration
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+The backend URL defaults to `http://localhost:8000`. Override it with `VITE_API_BASE` in
+`.env.local` (see `.env.example`).
 
-## Expanding the ESLint configuration
+## Structure
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+```
+src/
+  App.jsx               step navigation and shared state
+  constants.js          API URL, steps, method lists
+  styles/               global styles (injected by App)
+  utils/api.js          fetch wrapper with error handling
+  utils/excel.js        client-side Excel preview (SheetJS, lazy-loaded)
+  components/
+    StepUpload.jsx          1 · file upload, preview, format + column mapping
+    StepYearCorrection.jsx  2 · interpolation / extrapolation
+    StepRegression.jsx      3 · regression prediction
+    StepClustering.jsx      4 · K-Means clustering
+    StepKNN.jsx             5 · KNN classification
+    ui/                     small presentational components
+```
