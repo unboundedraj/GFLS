@@ -1016,10 +1016,14 @@ def interpolate_col(pdf, df, peak_year=2023, columns='None', method='linear'):
                 # fallback to linear if polynomial/spline fails
                 df_interp[col] = series.interpolate(method='linear', limit_direction='both')
 
+        elif interp_method == 'pad':
+            # Piecewise constant: carry the previous value forward, and back-fill
+            # leading gaps (interpolate(method='pad') is deprecated in pandas)
+            df_interp[col] = series.ffill().bfill()
+
         else:
             # Use pandas interpolate for other methods
             # Note: pandas interpolate does not support 'nearest_neighbour' but supports 'nearest'
-            # 'piecewise_constant' approximated by 'pad' (forward fill)
             try:
                 df_interp[col] = series.interpolate(method=interp_method, limit_direction='both')
             except Exception as e:
@@ -1095,13 +1099,14 @@ def extrapolate_col(pdf, df, peak_year=2023, columns='None', method='linear', or
                 elif method == 'arima':
                     try:
                         from statsmodels.tsa.arima.model import ARIMA
-                        if len(values) > 3:  # ARIMA needs more data
-                            years_full = np.arange(years[0], target_year + 1)
-                            n_extrap = target_year - years[-1]
-                            model = ARIMA(values, order=(1,1,0))
+                        n_extrap = int(target_year - years[-1])
+                        if len(values) > 3 and n_extrap > 0:  # ARIMA needs more data
+                            model = ARIMA(values.astype(float), order=(1,1,0))
                             model_fit = model.fit()
-                            forecast = model_fit.forecast(steps=n_extrap)
-                            y_pred = forecast.values[-1]
+                            # statsmodels rejects numpy ints for `steps` and returns
+                            # a plain ndarray when fitted on an ndarray
+                            forecast = np.asarray(model_fit.forecast(steps=n_extrap))
+                            y_pred = float(forecast[-1])
                             df_extrap.loc[country, col] = y_pred
                     except ImportError:
                         # No statsmodels installed
