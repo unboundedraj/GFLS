@@ -1,6 +1,3 @@
-
-
-
 """
 GFLS Automation - FastAPI Backend
 Wraps all processing functions from app.py and exposes them as REST endpoints.
@@ -220,7 +217,7 @@ async def year_correction(req: YearCorrectionRequest):
 
       1. pivot_with_assumptions(df, ref_year)  → pivot table (country as INDEX)
       2. interpolate_col / extrapolate_col     → filled pivot (country still as INDEX)
-      3. reset_index() + melt                 → back to long format
+      3. keep only cells that were filled     → long format rows
       4. concat with original df              → corrected long df saved to session
 
     Returns a preview of the corrected long DataFrame.
@@ -267,34 +264,28 @@ async def year_correction(req: YearCorrectionRequest):
 
         final_missing = int(result.isnull().sum().sum())
 
-        # ── 3. Melt corrected pivot back to long format ──────────────────────
-        # `result` has country in the INDEX.  Reset it first so it becomes a column.
-        result_reset = result.reset_index()   # country is now a proper column
+        # ── 3. Collect only the cells that were actually filled ──────────────
+        # `result` has country in the INDEX.  Values that already existed for
+        # ref_year are left out, otherwise they would be appended a second time.
+        metric_cols = [c for c in result.columns if c not in ("source", "assumption")]
+        filled_mask = pdf[metric_cols].isna() & result[metric_cols].notna()
 
-        # Identify id-variable columns that exist after reset_index
-        id_candidates = ["country", "source", "assumption"]
-        id_vars = [c for c in id_candidates if c in result_reset.columns]
-
-        # Everything else is a metric column
-        metric_cols = [c for c in result_reset.columns if c not in id_vars]
-
-        long_df = result_reset.melt(
-            id_vars=id_vars,
-            value_vars=metric_cols,
-            var_name="metric",
-            value_name="value",
+        filled = (
+            result[metric_cols]
+            .where(filled_mask)
+            .rename_axis(index="country", columns=None)
+            .reset_index()
+            .melt(id_vars="country", var_name="metric", value_name="value")
+            .dropna(subset=["value"])
         )
-        long_df["year"] = req.ref_year
-
-        # Re-order to canonical column order, filling any missing cols with None
-        for col in ["country", "year", "metric", "value", "source", "assumption"]:
-            if col not in long_df.columns:
-                long_df[col] = None
-        long_df = long_df[["country", "year", "metric", "value", "source", "assumption"]]
+        filled["year"] = req.ref_year
+        filled["source"] = "Year correction"
+        filled["assumption"] = f"{req.fix_method} ({req.interp_method})"
+        filled = filled[["country", "year", "metric", "value", "source", "assumption"]]
 
         # ── 4. Concat + sort, save back to session ───────────────────────────
         corrected = (
-            pd.concat([df, long_df], ignore_index=True)
+            pd.concat([df, filled], ignore_index=True)
             .sort_values(["country", "year", "metric"])
             .reset_index(drop=True)
         )
@@ -303,11 +294,12 @@ async def year_correction(req: YearCorrectionRequest):
         return {
             "original_missing": original_missing,
             "final_missing":    final_missing,
-            "values_filled":    original_missing - final_missing,
+            "values_filled":    int(len(filled)),
             "shape": {
                 "rows": int(corrected.shape[0]),
                 "cols": int(corrected.shape[1]),
             },
+            "filled_preview": filled.head(10).replace({np.nan: None}).to_dict(orient="records"),
             "preview": corrected.head(10).replace({np.nan: None}).to_dict(orient="records"),
         }
 
@@ -424,8 +416,9 @@ class ClusterRequest(BaseModel):
 class KNNRequest(BaseModel):
     session_id: str
     ref_year: int = 2023
-    selected_features: List[str]
+    selected_features: List[str] = []
     feature_weights: dict = {}
+    n_neighbors: int = 5
 
 
 @app.post("/clustering/run")
@@ -573,8 +566,12 @@ async def run_knn(req: KNNRequest):
         labels      = clust["cluster_labels"]
         country_col = clust["country_col"]
         X_train     = clust["weighted_data"]
+        # The training matrix was weighted during clustering, so the query
+        # points must use those same weights to live in the same space.
+        weights     = clust["feature_weights"]
 
-        knn = KNeighborsClassifier(n_neighbors=min(5, len(complete)))
+        k   = max(1, min(req.n_neighbors, len(complete)))
+        knn = KNeighborsClassifier(n_neighbors=k)
         knn.fit(X_train, labels)
 
         results = []
@@ -588,9 +585,11 @@ async def run_knn(req: KNNRequest):
                 row[f] if not pd.isna(row[f]) else float(complete[f].mean())
                 for f in features
             ]
-            imputed_scaled = clust["scaler"].transform([imputed])[0]
+            imputed_scaled = clust["scaler"].transform(
+                pd.DataFrame([imputed], columns=features)
+            )[0]
             for i, feat in enumerate(features):
-                imputed_scaled[i] *= req.feature_weights.get(feat, 1.0)
+                imputed_scaled[i] *= weights.get(feat, 1.0)
 
             probs      = knn.predict_proba([imputed_scaled])[0]
             pred_class = int(knn.predict([imputed_scaled])[0])
@@ -603,7 +602,7 @@ async def run_knn(req: KNNRequest):
                 "missing_feature":   missing_feat,
             })
 
-        return {"knn_results": results, "classified": len(results)}
+        return {"knn_results": results, "classified": len(results), "n_neighbors": k}
 
     except HTTPException:
         raise
