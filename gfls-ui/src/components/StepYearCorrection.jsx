@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { Alert, Checkbox, InputField, SelectField, Divider, Spinner, StatBox, DataTable } from "./ui";
-import { INTERP_METHODS, API_BASE } from "../constants";
+import { INTERP_METHODS, EXTRAP_METHODS, API_BASE } from "../constants";
 import { apiFetch } from "../utils/api";
+
+const METHODS_BY_FIX = { Interpolate: INTERP_METHODS, Extrapolate: EXTRAP_METHODS };
 
 export function StepYearCorrection({ sessionId, uploadResult, onDone }) {
   const [apply, setApply] = useState(false);
@@ -13,6 +15,13 @@ export function StepYearCorrection({ sessionId, uploadResult, onDone }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
+
+  const handleFixMethod = (m) => {
+    setFixMethod(m);
+    // interpolation and extrapolation accept different method names
+    setInterpMethod(METHODS_BY_FIX[m][0]);
+    setResult(null);
+  };
 
   const handleRun = async () => {
     setLoading(true);
@@ -69,7 +78,7 @@ export function StepYearCorrection({ sessionId, uploadResult, onDone }) {
                 <button
                   key={m}
                   className={`radio-btn${fixMethod === m ? " selected" : ""}`}
-                  onClick={() => setFixMethod(m)}
+                  onClick={() => handleFixMethod(m)}
                 >
                   {m}
                 </button>
@@ -77,13 +86,16 @@ export function StepYearCorrection({ sessionId, uploadResult, onDone }) {
             </div>
             <SelectField
               label={`${fixMethod} Method`}
-              options={INTERP_METHODS}
+              options={METHODS_BY_FIX[fixMethod]}
               value={interpMethod}
-              onChange={setInterpMethod}
+              onChange={(v) => {
+                setInterpMethod(v);
+                setResult(null);
+              }}
             />
             {fixMethod === "Extrapolate" && (
               <div className="two-col">
-                {interpMethod === "polynomial" && (
+                {interpMethod === "polynomial_regression" && (
                   <InputField
                     label="Polynomial Order"
                     type="number"
@@ -93,14 +105,16 @@ export function StepYearCorrection({ sessionId, uploadResult, onDone }) {
                     max={5}
                   />
                 )}
-                <InputField
-                  label="Moving Average Window"
-                  type="number"
-                  value={maWindow}
-                  onChange={setMaWindow}
-                  min={1}
-                  max={10}
-                />
+                {interpMethod === "moving_average_growth" && (
+                  <InputField
+                    label="Moving Average Window"
+                    type="number"
+                    value={maWindow}
+                    onChange={setMaWindow}
+                    min={1}
+                    max={10}
+                  />
+                )}
               </div>
             )}
             {error && <Alert type="error">{error}</Alert>}
@@ -141,7 +155,13 @@ export function StepYearCorrection({ sessionId, uploadResult, onDone }) {
             <StatBox label="Values Filled" value={result.values_filled} color="var(--success)" />
             <StatBox label="Remaining Missing" value={result.final_missing} color="var(--accent)" />
           </div>
-          <DataTable rows={result.preview} />
+          <div className="card-title" style={{ marginTop: 8 }}>
+            Filled Values
+          </div>
+          <DataTable
+            rows={result.filled_preview}
+            emptyMsg="No values could be filled with this method — try another one."
+          />
           <div style={{ height: 1, background: "var(--border)", margin: "20px 0" }} />
           <div
             style={{

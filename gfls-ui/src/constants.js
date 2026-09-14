@@ -1,4 +1,4 @@
-export const API_BASE = "http://localhost:8000";
+export const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 export const STEPS = ["Data Upload", "Year Correction", "Regression", "Clustering", "KNN Classification"];
 
@@ -18,4 +18,8 @@ export const COLUMN_FIELDS = ["country", "year", "metric", "value", "source", "a
 
 export const INTERP_METHODS = [
   "linear", "polynomial", "spline", "nearest_neighbour", "piecewise_constant", "logarithmic"
+];
+
+export const EXTRAP_METHODS = [
+  "cagr", "linear_regression", "polynomial_regression", "moving_average_growth", "arima"
 ];
