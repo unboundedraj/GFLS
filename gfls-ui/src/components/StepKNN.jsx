@@ -1,40 +1,19 @@
-import { useState, useEffect } from "react";
-import { Alert, InputField, Label, Divider, Spinner, StatBox } from "./ui";
+import { useState } from "react";
+import { Alert, Label, Divider, Spinner, StatBox } from "./ui";
 import { apiFetch } from "../utils/api";
 
 export function StepKNN({ sessionId, uploadResult, clusteringResult }) {
-  const availableFeatures =
-    clusteringResult?.selectedFeatures ||
-    uploadResult?.pivot_features ||
-    uploadResult?.metrics ||
-    [];
+  // The KNN model is trained on the clustering output, so features, weights
+  // and year are fixed by Step 4 and only shown here for reference.
+  const selectedFeatures = clusteringResult?.selectedFeatures || [];
+  const weights = clusteringResult?.weights || {};
+  const knnYear = clusteringResult?.clusterYear || 2023;
+  const maxNeighbors = Math.max(1, Math.min(10, clusteringResult?.countries_clustered || 10));
 
-  const [knnYear, setKnnYear] = useState(clusteringResult?.clusterYear || 2023);
-  const [selectedFeatures, setSelectedFeatures] = useState(
-    clusteringResult?.selectedFeatures || []
-  );
-  const [weights, setWeights] = useState(clusteringResult?.weights || {});
-  const [nNeighbors, setNNeighbors] = useState(5);
+  const [nNeighbors, setNNeighbors] = useState(Math.min(5, maxNeighbors));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
-
-  useEffect(() => {
-    if (clusteringResult?.selectedFeatures?.length && selectedFeatures.length === 0) {
-      setSelectedFeatures(clusteringResult.selectedFeatures);
-    }
-    if (clusteringResult?.weights) {
-      setWeights(clusteringResult.weights);
-    }
-    if (clusteringResult?.clusterYear) {
-      setKnnYear(clusteringResult.clusterYear);
-    }
-  }, [clusteringResult]);
-
-  const toggleFeature = (f) =>
-    setSelectedFeatures((prev) =>
-      prev.includes(f) ? prev.filter((x) => x !== f) : [...prev, f]
-    );
 
   const handleRun = async () => {
     setLoading(true);
@@ -49,6 +28,7 @@ export function StepKNN({ sessionId, uploadResult, clusteringResult }) {
           ref_year: knnYear,
           selected_features: selectedFeatures,
           feature_weights: weights,
+          n_neighbors: nNeighbors,
         }),
       });
       setResult(d);
@@ -109,15 +89,10 @@ export function StepKNN({ sessionId, uploadResult, clusteringResult }) {
 
         <div className="two-col">
           <div>
-            <InputField
-              label="Reference Year"
-              type="number"
-              value={knnYear}
-              onChange={setKnnYear}
-              min={1900}
-              max={2100}
-              step={1}
-            />
+            <Label>Reference Year</Label>
+            <div className="stat-val" style={{ color: "var(--accent)", marginTop: 6 }}>
+              {knnYear}
+            </div>
           </div>
           <div>
             <Label>K (Neighbours)</Label>
@@ -126,7 +101,7 @@ export function StepKNN({ sessionId, uploadResult, clusteringResult }) {
                 type="range"
                 className="slider"
                 min={1}
-                max={10}
+                max={maxNeighbors}
                 step={1}
                 value={nNeighbors}
                 onChange={(e) => setNNeighbors(Number(e.target.value))}
@@ -134,52 +109,24 @@ export function StepKNN({ sessionId, uploadResult, clusteringResult }) {
               <span className="slider-val">{nNeighbors}</span>
             </div>
             <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
-              Note: capped at number of clustered countries in the backend.
+              Capped at the number of clustered countries.
             </div>
           </div>
         </div>
 
         <Divider />
 
-        <div className="card-title">Features</div>
+        <div className="card-title">Features &amp; Weights</div>
         <Alert type="info">
-          Pre-filled from your clustering configuration. Adjust only if needed — features must match
-          those used during clustering.
+          Taken from your clustering run. To change them, go back to Step 4 and re-run clustering.
         </Alert>
         <div className="tag-list" style={{ marginTop: 12 }}>
-          {availableFeatures.map((f) => (
-            <button
-              key={f}
-              className={`tag${selectedFeatures.includes(f) ? " active" : ""}`}
-              onClick={() => toggleFeature(f)}
-            >
-              {f}
-            </button>
+          {selectedFeatures.map((f) => (
+            <span key={f} className="tag active" style={{ cursor: "default" }}>
+              {f} × {weights[f] ?? 1}
+            </span>
           ))}
         </div>
-
-        {selectedFeatures.length >= 2 && (
-          <>
-            <Divider />
-            <div className="card-title">Feature Weights</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 8 }}>
-              {selectedFeatures.map((f) => (
-                <div key={f} style={{ flex: "0 0 160px" }}>
-                  <InputField
-                    label={f}
-                    type="number"
-                    value={weights[f] ?? 1}
-                    onChange={(v) => setWeights((w) => ({ ...w, [f]: v }))}
-                    min={0}
-                    step={0.1}
-                  />
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-
-        {selectedFeatures.length < 2 && <Alert type="warn">Select at least 2 features to run KNN.</Alert>}
 
         {error && <Alert type="error">{error}</Alert>}
 
@@ -187,7 +134,7 @@ export function StepKNN({ sessionId, uploadResult, clusteringResult }) {
           <button
             className="btn btn-primary"
             onClick={handleRun}
-            disabled={loading || selectedFeatures.length < 2 || clusteringResult.partial_countries === 0}
+            disabled={loading || clusteringResult.partial_countries === 0}
           >
             {loading ? (
               <>

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Alert, InputField, Label, Divider, Spinner, StatBox, DataTable } from "./ui";
 import { API_BASE } from "../constants";
 import { apiFetch } from "../utils/api";
@@ -9,19 +9,14 @@ export function StepClustering({ sessionId, uploadResult, onDone }) {
     : uploadResult?.metrics || [];
 
   const [clusterYear, setClusterYear] = useState(2023);
-  const [selectedFeatures, setSelectedFeatures] = useState([]);
+  // Step 4 only mounts after an upload, so the features are known up front
+  const [selectedFeatures, setSelectedFeatures] = useState(() => availableFeatures.slice(0, 2));
   const [nClusters, setNClusters] = useState(3);
   const [maxClusters, setMaxClusters] = useState(6);
   const [weights, setWeights] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
-
-  useEffect(() => {
-    if (availableFeatures.length > 0 && selectedFeatures.length === 0) {
-      setSelectedFeatures(availableFeatures.slice(0, 2));
-    }
-  }, [availableFeatures.length]);
 
   const toggleFeature = (f) =>
     setSelectedFeatures((prev) =>
@@ -102,7 +97,11 @@ export function StepClustering({ sessionId, uploadResult, onDone }) {
                     max={8}
                     step={1}
                     value={nClusters}
-                    onChange={(e) => setNClusters(Number(e.target.value))}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      setNClusters(n);
+                      setMaxClusters((m) => Math.max(m, n));
+                    }}
                   />
                   <span className="slider-val">{nClusters}</span>
                 </div>
