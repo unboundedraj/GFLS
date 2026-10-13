@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { StepUpload, StepYearCorrection, StepRegression, StepClustering, StepKNN } from "./components";
+import { Landing } from "./components/Landing";
 import { STEPS } from "./constants";
 import { styles } from "./styles";
 
 const SESSION_ID = Math.random().toString(36).slice(2);
 
 export default function App() {
+  const [showLanding, setShowLanding] = useState(true);
   const [activeStep, setActiveStep] = useState(0);
   const [uploadResult, setUploadResult] = useState(null);
   const [yearDone, setYearDone] = useState(false);
@@ -22,13 +24,32 @@ export default function App() {
 
   const goNext = () => setActiveStep((s) => Math.min(s + 1, STEPS.length - 1));
 
+  if (showLanding) {
+    return (
+      <>
+        <style>{styles}</style>
+        <Landing
+          onLaunch={() => {
+            window.scrollTo(0, 0);
+            setShowLanding(false);
+          }}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       <style>{styles}</style>
       <div className="app">
         <header className="header">
           <div>
-            <div className="logo">
+            <div
+              className="logo"
+              style={{ cursor: "pointer" }}
+              title="Back to home"
+              onClick={() => setShowLanding(true)}
+            >
               <span>⬡</span> GFLS
             </div>
             <div className="logo-sub">Global Forecasting & Learning System · Automation UI</div>
